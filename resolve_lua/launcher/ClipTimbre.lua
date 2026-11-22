@@ -197,12 +197,23 @@ local win = disp:AddWindow({
 
             separator("VoiceSeparator"),
             ui:Label { Text = "Voice profile", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
+                ui:ComboBox {
+                    ID = "ProfileChoice", Events = { Activated = true },
+                    ToolTip = "Choose a saved voice profile", Weight = 1,
+                },
+                ui:Button { ID = "ProfileStatus", Text = "Profile status", Weight = 0 },
+            },
             ui:Label { ID = "VoiceProfileSummary", Text = "—", StyleSheet = STYLE_MUTED, Weight = 0 },
             ui:HGroup {
                 Weight = 0, Spacing = 7,
-                ui:Button { ID = "SelectProfile", Text = "Select / Create", Weight = 0 },
+                ui:LineEdit { ID = "NewProfileName", PlaceholderText = "New profile name", Weight = 1 },
+                ui:Button { ID = "CreateProfile", Text = "Create profile", Enabled = false, Weight = 0 },
+            },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
                 ui:Button { ID = "AddSample", Text = "Add voice sample", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
-                ui:Button { ID = "ProfileStatus", Text = "Profile status", Weight = 0 },
                 ui:HGap(0, 1),
             },
             ui:HGroup {
@@ -291,9 +302,11 @@ local win = disp:AddWindow({
                 Weight = 1,
             },
 
-            ui:Label {
+            ui:TextEdit {
                 ID = "YTSelectionDetails",
-                Text = "Select a risk; double-click it to jump to the timeline.",
+                ReadOnly = true,
+                MinimumSize = { 0, 54 },
+                MaximumSize = { 16777215, 54 },
                 StyleSheet = STYLE_MUTED,
                 Weight = 0,
             },
@@ -416,8 +429,8 @@ local win = disp:AddWindow({
                     ui:LineEdit { ID = "SettingBeepDuck", ToolTip = "How far the original audio is ducked under the beep. -36 dB masks speech while keeping ambience.", Weight = 0 },
                 },
                 ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:Label { Text = "Beep and Smooth Mute use one mix. Timeline Mute keeps separate tracks.", StyleSheet = STYLE_MICRO, WordWrap = true, Weight = 0 },
+                    ui:Label { ID = "SettingsMixNote", Text = "Beep and Smooth Mute use one mix.", StyleSheet = STYLE_MICRO, Weight = 0 },
+                    ui:Label { ID = "SettingsTracksNote", Text = "Timeline Mute keeps separate tracks.", StyleSheet = STYLE_MICRO, Weight = 0 },
                 },
             },
             ui:HGroup {
@@ -473,9 +486,12 @@ local scan_timer = ui:Timer { ID = "ScanTimer", Interval = 1000, SingleShot = tr
 local context_timer = ui:Timer { ID = "ContextTimer", Interval = 1200, SingleShot = false }
 local active_scan = nil
 local busy = false
-local risk_item_seconds = {}
-local risk_item_context = {}
+local selected_page = 0
+local risk_item_events = {}
 local cached_events = {}
+local risk_empty_message = "Open a timeline to scan its audio."
+local profile_choices = {}
+local selected_profile = ""
 local timeline_controls = {
     "DashScanYouTube", "DashFindVoice", "DashSetReference", "SetReference", "FindStreamer",
     "PrevStreamer", "NextStreamer", "ClearStreamer", "AddSample", "Correct", "Wrong",
@@ -483,7 +499,7 @@ local timeline_controls = {
     "PrevYouTube", "NextYouTube", "ClearYouTube", "AutoCensor", "Diagnostics",
 }
 local timeline_available = false
-local last_timeline_id = ""
+local last_context_key = nil
 
 local PAGE_IDS = {
     { button = "NavDashboard", page = "DashboardPage", index = 0 },
@@ -495,6 +511,7 @@ local PAGE_IDS = {
 }
 
 local function set_page(index)
+    selected_page = index
     itm.PageStack.CurrentIndex = index
     for _, entry in ipairs(PAGE_IDS) do
         local active = entry.index == index
@@ -504,9 +521,7 @@ local function set_page(index)
     end
     pcall(function() itm.PageStack:Update() end)
 
-    if index == 3 then
-        if not active_scan then pcall(function() cached_events = sv.get_youtube_events() end) end
-    elseif index == 5 then
+    if index == 5 then
         pcall(function() itm.LogView.PlainText = sv.get_log_tail(220) end)
     end
 end
@@ -583,8 +598,7 @@ local function refresh_risk_tree()
     local query = tostring(itm.YTSearch.Text or ""):lower()
     local severity_filter = tostring(itm.YTSeverityFilter.CurrentText or "All")
     itm.YTRisks:Clear()
-    risk_item_seconds = {}
-    risk_item_context = {}
+    risk_item_events = {}
     local shown = 0
     for _, e in ipairs(cached_events or {}) do
         local sev = tostring(e.severity or "review")
@@ -597,15 +611,34 @@ local function refresh_risk_tree()
             row.Text[1] = sev:upper()
             row.Text[2] = pretty_category(e.category)
             row.Text[3] = tostring(e.phrase or "")
+            row.ToolTip[3] = row.Text[3]
+            row.WhatsThis[0] = tostring(shown + 1)
             itm.YTRisks:AddTopLevelItem(row)
-            risk_item_seconds[row] = tonumber(e.start) or 0
-            risk_item_context[row] = tostring(e.context or "")
             shown = shown + 1
+            risk_item_events[shown] = e
         end
     end
-    if shown == 0 then
-        itm.YTSelectionDetails.Text = (#(cached_events or {}) == 0) and "No scan results yet." or "No risks match the current filter."
+    itm.YTSelectionDetails.PlainText = shown > 0 and "Select a risk to read its context. Double-click to jump to the timeline."
+        or (#cached_events > 0 and "No risks match the current filter." or risk_empty_message)
+end
+
+local function show_active_profile(name)
+    selected_profile = name
+    local index = -1
+    for i, candidate in ipairs(profile_choices) do
+        if candidate == name then index = i - 1; break end
     end
+    itm.ProfileChoice.CurrentIndex = index
+    itm.ProfileChoice.ToolTip = index >= 0 and name or "Choose a saved voice profile"
+end
+
+local function refresh_profiles()
+    local names, active = sv.list_profiles()
+    profile_choices = names
+    itm.ProfileChoice:Clear()
+    for _, name in ipairs(names) do itm.ProfileChoice:AddItem(name) end
+    itm.ProfileChoice.Enabled = #names > 0
+    show_active_profile(active)
 end
 
 local function load_settings()
@@ -629,14 +662,39 @@ end
 local function update_snapshot(message)
     local ok, snap = pcall(sv.get_ui_snapshot)
     if not ok then
+        last_context_key = nil
+        timeline_available = false
+        for _, id in ipairs(timeline_controls) do itm[id].Enabled = false end
+        cached_events = {}
+        risk_empty_message = "Could not read the current timeline."
+        refresh_risk_tree()
+        itm.YTCountHigh.Text = "HIGH 0"
+        itm.YTCountReview.Text = "REVIEW 0"
+        itm.YTCountPersonal.Text = "PERSONAL 0"
+        itm.CardYouTube.Text = "Timeline unavailable"
+        itm.CardYouTubeMeta.Text = ""
+        itm.HeaderRuntime.Text = "v0.16.0"
+        itm.YTScanRuntime.Text = "Runtime: unavailable"
+        itm.SettingEngineRuntime.Text = "Current runtime: unavailable"
         itm.FooterDot.StyleSheet = STYLE_ERROR
         itm.FooterStatus.Text = "Context error: " .. tostring(snap)
         return
     end
+    local changed = snap.context_key ~= last_context_key
     timeline_available = snap.has_timeline
-    last_timeline_id = snap.timeline_id
+    last_context_key = snap.context_key
     for _, id in ipairs(timeline_controls) do
         itm[id].Enabled = timeline_available
+    end
+    itm.ScanYouTube.Enabled = timeline_available or active_scan ~= nil
+    itm.DashScanYouTube.Enabled = itm.ScanYouTube.Enabled
+    itm.AutoCensor.Enabled = timeline_available and not active_scan
+    if changed then
+        itm.YTProgressBar.Text = "0%"
+        itm.DashProgressBar.Text = "0%"
+        itm.YTProgressText.Text = "Idle"
+        itm.DashProgressText.Text = ""
+        itm.DashScanStage.Text = "Idle"
     end
     itm.HeaderContext.Text = timeline_available and
         compact_context(snap.project .. "  /  " .. snap.timeline, 72) or "Open a timeline in Resolve to start editing"
@@ -649,7 +707,13 @@ local function update_snapshot(message)
     itm.CardProfile.Text = compact_context(snap.profile, 24)
     itm.CardProfile.ToolTip = snap.profile
     itm.CardReferences.Text = tostring(snap.reference_count) .. " voice sample(s)"
-    itm.VoiceProfileSummary.Text = string.format("%s  •  %d sample(s)", snap.profile, snap.reference_count)
+    itm.VoiceProfileSummary.Text = string.format("%d voice sample(s)", snap.reference_count)
+    if snap.profile ~= selected_profile then show_active_profile(snap.profile) end
+
+    cached_events = snap.youtube_rows
+    risk_empty_message = not timeline_available and "Open a timeline to scan its audio."
+        or (snap.youtube_valid and "No risks found in this scan." or "Scan this timeline to see its results.")
+    refresh_risk_tree()
 
     if not timeline_available then
         itm.CardYouTube.Text = "No timeline open"
@@ -660,7 +724,7 @@ local function update_snapshot(message)
         itm.CardYouTube.StyleSheet = snap.youtube_high > 0 and STYLE_ERROR or (snap.youtube_review > 0 and STYLE_WARN or STYLE_SUCCESS)
         itm.CardYouTubeMeta.Text = "Last scan: " .. tostring(snap.youtube_scanned_text)
     else
-        itm.CardYouTube.Text = snap.youtube_events > 0 and "Scan is stale" or "Not scanned"
+        itm.CardYouTube.Text = "Not scanned"
         itm.CardYouTube.StyleSheet = STYLE_WARN
         itm.CardYouTubeMeta.Text = tostring(snap.youtube_problem ~= "" and snap.youtube_problem or "Run YouTube Safety scan")
     end
@@ -708,6 +772,7 @@ local function run_timeline_ui_action(label, fn)
     local ok, err = pcall(fn)
     if bmd and bmd.wait then bmd.wait(0.1) end
     win:Show()
+    set_page(selected_page)
     busy = false
     if ok then update_snapshot(label .. " — done")
     else
@@ -744,6 +809,15 @@ local function set_scan_controls(running)
 end
 
 local function update_scan_ui(status)
+    if active_scan.context_key ~= last_context_key then
+        local detail = "Scan running on another timeline."
+        itm.YTProgressText.Text = detail
+        itm.DashProgressText.Text = detail
+        itm.DashScanStage.Text = "Scanning another timeline"
+        itm.FooterStatus.Text = detail
+        itm.FooterDot.StyleSheet = STYLE_WARN
+        return
+    end
     local p = tonumber(status.progress_percent) or 0
     local stage = stage_name(status.stage)
     local elapsed = tonumber(status.elapsed_seconds) or 0
@@ -770,8 +844,16 @@ local function update_scan_ui(status)
 end
 
 local function finish_scan_ui(status)
+    local finished_key = active_scan.context_key
     active_scan = nil
     set_scan_controls(false)
+    update_snapshot("Ready")
+    if finished_key ~= last_context_key then
+        itm.YTProgressText.Text = "Idle"
+        itm.DashProgressText.Text = ""
+        itm.DashScanStage.Text = "Idle"
+        return
+    end
     if status.cancelled then
         itm.YTProgressText.Text = "Scan cancelled."
         itm.DashProgressText.Text = "Scan cancelled."
@@ -794,9 +876,7 @@ local function finish_scan_ui(status)
     itm.YTProgressText.Text = string.format("Complete — %d HIGH, %d REVIEW", tonumber(status.high_count) or 0, tonumber(status.review_count) or 0)
     itm.DashProgressText.Text = itm.YTProgressText.Text
     itm.DashScanStage.Text = "Complete"
-    cached_events = sv.get_youtube_events()
-    refresh_risk_tree()
-    update_snapshot("YouTube scan complete")
+    itm.FooterStatus.Text = "YouTube scan complete"
 end
 
 local function start_youtube_scan()
@@ -852,9 +932,13 @@ itm.YTRisks.ColumnWidth[3] = 220
 
 -- Navigation ----------------------------------------------------------------
 function win.On.NavDashboard.Clicked(ev) set_page(0) end
-function win.On.NavVoice.Clicked(ev) set_page(1) end
+function win.On.NavVoice.Clicked(ev)
+    set_page(1)
+    local ok, err = pcall(refresh_profiles)
+    if not ok then itm.FooterStatus.Text = tostring(err):gsub("^.-:%d+: ", "") end
+end
 function win.On.NavPauses.Clicked(ev) set_page(2) end
-function win.On.NavYouTube.Clicked(ev) set_page(3); refresh_risk_tree() end
+function win.On.NavYouTube.Clicked(ev) set_page(3); update_snapshot() end
 function win.On.NavSettings.Clicked(ev) set_page(4); load_settings() end
 function win.On.NavDiagnostics.Clicked(ev) set_page(5) end
 
@@ -868,8 +952,8 @@ function win.On.Close.Clicked(ev)
     disp:ExitLoop()
 end
 function win.On.Refresh.Clicked(ev)
+    if selected_page == 1 then pcall(refresh_profiles) end
     update_snapshot("Status refreshed")
-    pcall(function() cached_events = sv.get_youtube_events(); refresh_risk_tree() end)
 end
 
 -- Dashboard -----------------------------------------------------------------
@@ -883,7 +967,27 @@ function win.On.FindStreamer.Clicked(ev) run_action("Find streamer", sv.find_str
 function win.On.PrevStreamer.Clicked(ev) run_action("Previous streamer region", sv.previous_streamer) end
 function win.On.NextStreamer.Clicked(ev) run_action("Next streamer region", sv.next_streamer) end
 function win.On.ClearStreamer.Clicked(ev) run_action("Clear streamer markers", sv.clear_markers) end
-function win.On.SelectProfile.Clicked(ev) run_action("Select profile", sv.select_profile, update_snapshot) end
+function win.On.ProfileChoice.Activated(ev)
+    local name = profile_choices[itm.ProfileChoice.CurrentIndex + 1]
+    if not name or name == selected_profile then return end
+    run_action("Switch voice profile", function() sv.select_profile(name) end)
+    show_active_profile(selected_profile)
+end
+
+local function create_voice_profile()
+    local name = tostring(itm.NewProfileName.Text or "")
+    if not name:match("%S") then return end
+    run_action("Create voice profile", function()
+        sv.create_profile(name)
+        itm.NewProfileName.Text = ""
+        refresh_profiles()
+    end)
+end
+function win.On.NewProfileName.TextChanged(ev)
+    itm.CreateProfile.Enabled = tostring(itm.NewProfileName.Text or ""):match("%S") ~= nil
+end
+function win.On.NewProfileName.ReturnPressed(ev) create_voice_profile() end
+function win.On.CreateProfile.Clicked(ev) create_voice_profile() end
 function win.On.AddSample.Clicked(ev) run_action("Add voice sample", sv.add_profile_reference, update_snapshot) end
 function win.On.ProfileStatus.Clicked(ev) run_action("Profile status", sv.profile_status) end
 function win.On.Correct.Clicked(ev) run_action("Confirm match", sv.feedback_correct) end
@@ -902,25 +1006,36 @@ function win.On.ScanYouTube.Clicked(ev) if active_scan then cancel_youtube_scan(
 function win.On.PrevYouTube.Clicked(ev) run_action("Previous YouTube risk", sv.previous_youtube_risk) end
 function win.On.NextYouTube.Clicked(ev) run_action("Next YouTube risk", sv.next_youtube_risk) end
 function win.On.ClearYouTube.Clicked(ev)
-    run_action("Clear YouTube markers", sv.clear_youtube_markers, function() update_snapshot(); refresh_risk_tree() end)
+    run_action("Clear YouTube markers", sv.clear_youtube_markers)
 end
 function win.On.YTRefreshResults.Clicked(ev)
-    cached_events = sv.get_youtube_events()
-    refresh_risk_tree()
     update_snapshot("YouTube results refreshed")
 end
-function win.On.YTSearch.TextChanged(ev) refresh_risk_tree() end
-function win.On.YTSeverityFilter.CurrentIndexChanged(ev) refresh_risk_tree() end
+local function risk_context_is_current()
+    local ok, key = pcall(sv.get_ui_context_key)
+    if ok and key == last_context_key then return true end
+    update_snapshot()
+    return false
+end
+function win.On.YTSearch.TextChanged(ev)
+    if risk_context_is_current() then refresh_risk_tree() end
+end
+function win.On.YTSeverityFilter.CurrentIndexChanged(ev)
+    if risk_context_is_current() then refresh_risk_tree() end
+end
 function win.On.YTRisks.ItemClicked(ev)
-    local start = risk_item_seconds[ev.item]
-    local context = compact_context(risk_item_context[ev.item], 190)
-    itm.YTSelectionDetails.Text = string.format("%s  •  %s  •  %s  —  %s", tostring(ev.item.Text[0]), tostring(ev.item.Text[1]), tostring(ev.item.Text[2]), compact_context(context, 120))
-    if start then itm.FooterStatus.Text = "Selected risk at " .. format_clock(start) end
+    if not ev.item or not risk_context_is_current() then return end
+    local event = risk_item_events[tonumber(ev.item.WhatsThis[0])]
+    if not event then return end
+    itm.YTSelectionDetails.PlainText = string.format("%s  •  %s  •  %s\n%s\n%s", format_clock(event.start),
+        event.severity:upper(), pretty_category(event.category), event.phrase, event.context)
+    itm.FooterStatus.Text = "Selected risk at " .. format_clock(event.start)
 end
 function win.On.YTRisks.ItemDoubleClicked(ev)
-    local start = risk_item_seconds[ev.item]
-    if start then
-        local ok, tc = pcall(function() return sv.jump_to_youtube_seconds(start) end)
+    if not ev.item or not risk_context_is_current() then return end
+    local event = risk_item_events[tonumber(ev.item.WhatsThis[0])]
+    if event then
+        local ok, tc = pcall(function() return sv.jump_to_youtube_seconds(event.start) end)
         if ok then itm.FooterStatus.Text = "Jumped to " .. tostring(tc) else itm.FooterStatus.Text = "Jump failed: " .. tostring(tc) end
     end
 end
@@ -964,24 +1079,12 @@ function win.On.OpenLog.Clicked(ev) pcall(sv.open_log) end
 function win.On.OpenData.Clicked(ev) pcall(sv.open_app_folder) end
 function win.On.ClearCache.Clicked(ev) run_action("Clear cache", sv.clear_cache) end
 
--- Check the Resolve context occasionally without rescanning or reading reports.
-local function current_timeline_id()
-    local manager = app:GetProjectManager()
-    local project = manager and manager:GetCurrentProject()
-    local timeline = project and project:GetCurrentTimeline()
-    if not timeline then return "" end
-    local ok, id = pcall(function() return timeline:GetUniqueId() end)
-    if ok and id and tostring(id) ~= "" then return tostring(id) end
-    return tostring(timeline:GetName())
-end
-
 function disp.On.Timeout(ev)
     if ev.who == context_timer.ID then
-        if not busy and not active_scan then
-            local ok, id = pcall(current_timeline_id)
-            if ok and id ~= last_timeline_id then
+        if not busy then
+            local ok, key = pcall(sv.get_ui_context_key)
+            if not ok or key ~= last_context_key then
                 update_snapshot("Ready")
-                pcall(function() cached_events = sv.get_youtube_events(); refresh_risk_tree() end)
             end
         end
         return
@@ -1001,9 +1104,8 @@ function disp.On.Timeout(ev)
 end
 
 load_settings()
+pcall(refresh_profiles)
 update_snapshot("Ready")
-cached_events = sv.get_youtube_events()
-refresh_risk_tree()
 set_scan_controls(false)
 
 win:Show()

@@ -10,10 +10,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import imageio_ffmpeg
-
-from timeline_audio import materialize_manifest_wav
-
 APP = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice")
 PROFILES = APP / "profiles"
 ACTIVE = APP / "active_profile.txt"
@@ -62,7 +58,27 @@ def ensure_profile(name: str) -> tuple[str, Path]:
     return name, d
 
 
-def select_profile(name: str) -> None:
+def list_profiles() -> list[str]:
+    if not PROFILES.is_dir():
+        return []
+    return sorted(
+        (p.name for p in PROFILES.iterdir() if safe_name(p.name) == p.name
+         and p.is_dir() and ((p / "profile.json").is_file() or (p / "refs").is_dir())),
+        key=lambda name: (name.casefold(), name),
+    )
+
+
+def select_profile(name: str, *, existing: bool = False, create: bool = False) -> None:
+    if (existing or create) and (not name.strip() or safe_name(name) != name.strip()):
+        raise ValueError("Use letters, numbers, spaces, underscores, hyphens, periods or parentheses in a profile name")
+    if existing and name not in list_profiles():
+        raise ValueError("Voice profile no longer exists")
+    if create:
+        PROFILES.mkdir(parents=True, exist_ok=True)
+        try:
+            profile_dir(name).mkdir()
+        except FileExistsError as exc:
+            raise ValueError("A voice profile with this name already exists") from exc
     name, d = ensure_profile(name)
     ACTIVE.parent.mkdir(parents=True, exist_ok=True)
     ACTIVE.write_text(name + "\n", encoding="utf-8")
@@ -76,6 +92,8 @@ def select_profile(name: str) -> None:
 
 
 def add_reference(name: str, audio: Path, offset: float, duration: float) -> Path:
+    import imageio_ffmpeg
+
     name, d = ensure_profile(name)
     refs = d / "refs"
     existing = sorted(refs.glob("ref_*.wav"))
@@ -104,6 +122,8 @@ def add_reference(name: str, audio: Path, offset: float, duration: float) -> Pat
 
 
 def add_reference_from_manifest(name: str, manifest: Path, offset: float, duration: float) -> Path:
+    from timeline_audio import materialize_manifest_wav
+
     name, d = ensure_profile(name)
     refs = d / "refs"
     existing = sorted(refs.glob("ref_*.wav"))
@@ -191,11 +211,17 @@ def status(name: str) -> dict:
 
 
 def main() -> int:
+    global APP, PROFILES, ACTIVE, CONFIG
     p = argparse.ArgumentParser()
+    p.add_argument("--data-dir", type=Path, default=APP)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("select")
     s.add_argument("name")
+    select_mode = s.add_mutually_exclusive_group()
+    select_mode.add_argument("--existing", action="store_true")
+    select_mode.add_argument("--create", action="store_true")
+    sub.add_parser("list")
 
     a = sub.add_parser("add-reference")
     a.add_argument("--profile", default=None)
@@ -217,8 +243,15 @@ def main() -> int:
     st.add_argument("--profile", default=None)
 
     args = p.parse_args()
+    APP = args.data_dir
+    PROFILES = APP / "profiles"
+    ACTIVE = APP / "active_profile.txt"
+    CONFIG = APP / "config.json"
+    sys.stdout.reconfigure(encoding="utf-8")
     if args.cmd == "select":
-        select_profile(args.name)
+        select_profile(args.name, existing=args.existing, create=args.create)
+    elif args.cmd == "list":
+        print("\n".join(list_profiles()))
     elif args.cmd == "add-reference":
         if args.manifest:
             add_reference_from_manifest(args.profile or active_name(), Path(args.manifest), args.offset, args.duration)
@@ -234,4 +267,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc

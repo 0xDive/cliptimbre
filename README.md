@@ -24,13 +24,13 @@ Restart Resolve and open **Workspace → Scripts → ClipTimbre**. The first ins
 
 The installer reuses a working runtime and existing Streamer Voice data in `~/.streamer_voice`. It backs up replaced scripts and installs one menu item. Fresh Apple Silicon installs include MLX Whisper. Fresh Windows and Linux installs use CPU PyTorch wheels by default. Pass `--pytorch-index URL` to select a compatible GPU build.
 
-Run `python install.py --uninstall` to remove the menu item. Profiles, settings, generated media and runtime files stay in the data directory.
+Run the installation command for your platform with `--uninstall` to remove the menu item. Profiles, settings, generated media and runtime files stay in the data directory.
 
 ## Use
 
-1. **Voice.** Set a temporary reference from the playhead or save samples in a voice profile. Find matching speech and navigate its duration markers. **Correct** and **Wrong** calibrate the profile threshold.
+1. **Voice.** Choose a saved voice profile from the dropdown or enter a name to create one. Save samples in the active profile or set a temporary reference from the playhead. Find matching speech and navigate its duration markers. **Correct** and **Wrong** calibrate the profile threshold.
 2. **Pauses.** Run **Find voice**, then mark pauses inside matches. Review the markers before **Tighten pauses**. By default, Tighten creates a backup. Clip-aligned pauses use Resolve's native ripple delete. Range edits inside clips need Accessibility on macOS and X11 with `xdotool` on Linux.
-3. **YouTube Safety.** Scan speech with local Whisper transcription, then review the flagged phrases and context. **Edit risk rules** opens the local rules file. New installs include starter English and Russian rules. The scan is an editorial aid and does not predict YouTube decisions.
+3. **YouTube Safety.** Scan the current timeline with local Whisper transcription. Select a flagged phrase to read its context in the scrollable panel. Changing projects or timelines clears any mismatched report from view. **Edit risk rules** opens the local rules file. New installs include starter English and Russian rules. The scan is an editorial aid and does not predict YouTube decisions.
 4. **Auto Censor.** Choose **Beep**, **Smooth Mute**, or **Timeline Mute** to create a processed timeline copy. Timeline Mute leaves gaps on the existing tracks and uses short rendered edge clips for fades when the source mapping can be resolved. Keep these WAVs in place while the project references them.
 
 Set `"audio_source_mode": "render"` in `~/.streamer_voice/config.json` if analysis needs the processed Resolve mix. The **Diagnostics** page opens the log and data folder. Reports, media paths, profiles and generated audio stay in the local data directory.

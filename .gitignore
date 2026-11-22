@@ -11,7 +11,15 @@ __pycache__/
 /config.json
 /ad_safety_terms.json
 /active_profile.txt
+/state.txt
+/analysis_state.txt
+/pause_state.txt
+/youtube_state.txt
+/latest_*.json
+/latest_*.tsv
+/diagnostics.txt
 /.streamer_voice/
+/backups/
 /profiles/
 /models/
 /cache/

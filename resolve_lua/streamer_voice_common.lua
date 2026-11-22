@@ -321,9 +321,15 @@ local function get_context()
     return r, project, timeline
 end
 
-local function timeline_id(timeline)
-    local ok, value = pcall(function() return timeline:GetUniqueId() end)
+local function unique_id(item)
+    if not item then return nil end
+    local ok, value = pcall(function() return item:GetUniqueId() end)
     if ok and value and tostring(value) ~= "" then return tostring(value) end
+end
+
+local function timeline_id(timeline)
+    local id = unique_id(timeline)
+    if id then return id end
     return tostring(timeline:GetName())
 end
 
@@ -1447,7 +1453,27 @@ local function parse_ad_safety_tsv(path)
     return out
 end
 
-local function write_youtube_state(timeline, fps, events)
+local function current_project_timeline()
+    local manager = get_resolve():GetProjectManager()
+    local project = manager and manager:GetCurrentProject()
+    return project, project and project:GetCurrentTimeline()
+end
+
+local function ui_context_key(project, timeline)
+    if not project then return "" end
+    local project_key = unique_id(project) or tostring(project:GetName())
+    if not timeline then return project_key end
+    return table.concat({
+        project_key, tostring(project:GetName()), timeline_id(timeline), tostring(timeline:GetName()),
+        tostring(timeline:GetStartFrame()), tostring(timeline:GetEndFrame()), tostring(get_fps(timeline)),
+    }, "\0")
+end
+
+function M.get_ui_context_key()
+    return ui_context_key(current_project_timeline())
+end
+
+local function write_youtube_state(project, timeline, fps, events)
     local span = nil
     pcall(function() span = tonumber(timeline:GetEndFrame()) - tonumber(timeline:GetStartFrame()) end)
     local high_count, review_count = 0, 0
@@ -1455,7 +1481,8 @@ local function write_youtube_state(timeline, fps, events)
         if tostring(e.severity) == "high" then high_count = high_count + 1 else review_count = review_count + 1 end
     end
     write_all(YOUTUBE_STATE_PATH, table.concat({
-        "timeline_id=" .. timeline_id(timeline),
+        "project_id=" .. (unique_id(project) or ""),
+        "timeline_id=" .. (unique_id(timeline) or ""),
         "fps=" .. tostring(fps),
         "timeline_span_frames=" .. tostring(span or -1),
         "event_count=" .. tostring(#(events or {})),
@@ -1465,11 +1492,15 @@ local function write_youtube_state(timeline, fps, events)
     }, "\n") .. "\n")
 end
 
-local function youtube_state_problem(timeline, fps)
+local function youtube_state_problem(project, timeline, fps)
     local state = read_kv_file(YOUTUBE_STATE_PATH)
     if not state then return "YouTube scan state is missing" end
-    if tostring(state.timeline_id) ~= timeline_id(timeline) then
+    local id = unique_id(timeline)
+    if not id or state.timeline_id ~= id then
         return "latest YouTube scan belongs to another timeline"
+    end
+    if state.project_id and state.project_id ~= "" and state.project_id ~= unique_id(project) then
+        return "latest YouTube scan belongs to another project"
     end
     if math.abs((tonumber(state.fps) or fps) - fps) > 0.01 then
         return "timeline FPS changed after YouTube scan"
@@ -1483,13 +1514,13 @@ local function youtube_state_problem(timeline, fps)
     if not file_exists(LATEST_AD_SAFETY_JSON_PATH) or not file_exists(LATEST_AD_SAFETY_PATH) then
         return "latest YouTube report is missing"
     end
-    return nil
+    return nil, state
 end
 
-local function validate_youtube_state(timeline, fps)
-    local problem = youtube_state_problem(timeline, fps)
+local function validate_youtube_state(project, timeline, fps)
+    local problem, state = youtube_state_problem(project, timeline, fps)
     if problem then fail(problem .. ". Run Scan Ad-Safety Risks again.") end
-    return read_kv_file(YOUTUBE_STATE_PATH)
+    return state
 end
 
 local function add_ad_safety_markers(timeline, fps, events, cfg)
@@ -1535,7 +1566,7 @@ function M.scan_youtube_safety()
         local added, high_count, review_count = add_ad_safety_markers(timeline, fps, events, cfg)
         copy_file(out_tsv, LATEST_AD_SAFETY_PATH)
         copy_file(out_json, LATEST_AD_SAFETY_JSON_PATH)
-        write_youtube_state(timeline, fps, events)
+        write_youtube_state(project, timeline, fps, events)
         notify(string.format("YouTube scan: %d markers (%d high, %d review). Audio-only check; green icon is not guaranteed.", added, high_count, review_count))
     end)
     remove_tree(run_dir)
@@ -2247,11 +2278,11 @@ function M.auto_censor_youtube(opts)
     local _, project, timeline = get_context()
     local cfg = load_config()
     local fps = get_fps(timeline)
-    local scan_problem = youtube_state_problem(timeline, fps)
+    local scan_problem = youtube_state_problem(project, timeline, fps)
     if scan_problem then
         notify("Auto Censor needs a fresh scan (" .. scan_problem .. "); scanning now…")
         M.scan_youtube_safety()
-        validate_youtube_state(timeline, fps)
+        validate_youtube_state(project, timeline, fps)
     end
 
     local categories, category_set = censor_category_list(opts)
@@ -2744,6 +2775,13 @@ local function run_capture(args, redirect_stderr)
     return (out:gsub("%s+$", ""))
 end
 
+local function run_profile_command(...)
+    if not file_exists(VENV_PYTHON) or not file_exists(PROFILE_BACKEND_PATH) then
+        fail("Profile backend missing. Re-run the ClipTimbre installer")
+    end
+    return run_capture({VENV_PYTHON, PROFILE_BACKEND_PATH, "--data-dir", APP_DIR, ...}, true)
+end
+
 local function prompt_text(title, message, default_value)
     if IS_LINUX then
         if not command_ok(os.execute("command -v zenity >/dev/null 2>&1")) then
@@ -2778,24 +2816,46 @@ local function prompt_text(title, message, default_value)
     return out
 end
 
-function M.select_profile()
-    if not file_exists(VENV_PYTHON) or not file_exists(PROFILE_BACKEND_PATH) then
-        fail("Profile backend missing. Re-run the ClipTimbre installer")
+function M.list_profiles()
+    local out = run_profile_command("list")
+    if not out then fail("Could not read the voice profiles") end
+    local names = {}
+    for name in out:gmatch("[^\r\n]+") do
+        names[#names + 1] = name
     end
-    local current = active_profile_name()
-    local name = prompt_text("ClipTimbre", "Profile name:", current)
-    if not name then notify("Profile selection cancelled"); return end
-    local out = run_capture({VENV_PYTHON, PROFILE_BACKEND_PATH, "select", name}, true)
+    return names, active_profile_name()
+end
+
+local function checked_profile_name(name)
+    name = tostring(name or ""):match("^%s*(.-)%s*$")
+    if name == "" or name:find("[^\128-\255%w .()_%-]") then
+        fail("Enter a profile name using letters, numbers, spaces or simple punctuation.")
+    end
+    return name
+end
+
+function M.select_profile(name)
+    local out
+    if name then
+        out = run_profile_command("select", "--existing", "--", checked_profile_name(name))
+    else
+        name = prompt_text("ClipTimbre", "Profile name:", active_profile_name())
+        if not name then return end
+        out = run_profile_command("select", "--", checked_profile_name(name))
+    end
     if not out or out == "" then fail("Could not select profile. See log.") end
-    notify("Active voice profile: " .. out)
+    return out
+end
+
+function M.create_profile(name)
+    local out = run_profile_command("select", "--create", "--", checked_profile_name(name))
+    if not out or out == "" then fail("Enter a unique profile name using letters, numbers, spaces or simple punctuation.") end
+    return out
 end
 
 function M.profile_status()
-    if not file_exists(VENV_PYTHON) or not file_exists(PROFILE_BACKEND_PATH) then
-        fail("Profile backend missing. Re-run the ClipTimbre installer")
-    end
     local name = active_profile_name()
-    local out = run_capture({VENV_PYTHON, PROFILE_BACKEND_PATH, "status", "--profile", name}, true)
+    local out = run_profile_command("status", "--profile=" .. name)
     if not out then fail("Could not read profile status") end
     notify("Profile " .. name .. ": " .. out)
 end
@@ -2813,7 +2873,7 @@ function M.add_profile_reference()
     mkdir_p(run_dir)
     local ok, err = pcall(function()
         local source = prepare_timeline_audio_source(project, timeline, fps, run_dir, cfg)
-        local args = { VENV_PYTHON, PROFILE_BACKEND_PATH, "add-reference", "--profile", name }
+        local args = {"add-reference", "--profile=" .. name}
         local offset = rel_frame / fps
         if source.kind == "manifest" then
             table.insert(args, "--manifest")
@@ -2827,7 +2887,7 @@ function M.add_profile_reference()
         table.insert(args, tostring(offset))
         table.insert(args, "--duration")
         table.insert(args, tostring(duration))
-        local out = run_capture(args, true)
+        local out = run_profile_command(unpack(args))
         if not out then fail("Could not save profile reference. See log.") end
         timeline:AddMarker(rel_frame, "Blue", MARKER_PREFIX .. " PROFILE REF", "Saved to profile: " .. name, math.max(1, math.floor(duration * fps + 0.5)), "streamer_voice_profile_ref_v1")
         notify(string.format("Added %.1fs voice sample to profile '%s'", duration, name))
@@ -2839,7 +2899,7 @@ end
 
 function M.clear_profile_references()
     local name = active_profile_name()
-    local out = run_capture({VENV_PYTHON, PROFILE_BACKEND_PATH, "clear-references", "--profile", name}, true)
+    local out = run_profile_command("clear-references", "--profile=" .. name)
     if not out then fail("Could not clear profile references") end
     notify("Cleared " .. tostring(out) .. " reference sample(s) from profile " .. name)
 end
@@ -2872,12 +2932,11 @@ local function submit_feedback(label)
     local marker = current_streamer_marker(timeline, fps)
     if not marker then fail("Put the playhead inside a [SV] STREAMER marker first") end
     local profile = active_profile_name()
-    local out = run_capture({
-        VENV_PYTHON, PROFILE_BACKEND_PATH, "feedback",
-        "--profile", profile,
+    local out = run_profile_command(
+        "feedback", "--profile=" .. profile,
         "--score", tostring(marker.score),
-        "--label", label,
-    }, true)
+        "--label", label
+    )
     if not out then fail("Could not save profile feedback") end
     notify(string.format("%s: score %.3f. New threshold: %s", label == "correct" and "Confirmed streamer" or "Marked wrong", marker.score, out))
 end
@@ -3010,15 +3069,14 @@ local function human_duration(seconds)
 end
 
 function M.get_ui_snapshot()
-    local manager = get_resolve():GetProjectManager()
-    local project = manager and manager:GetCurrentProject()
-    local timeline = project and project:GetCurrentTimeline()
+    local project, timeline = current_project_timeline()
     local fps = timeline and get_fps(timeline) or 0
     local duration_seconds = timeline and math.max(0, timeline_span(timeline)) / fps or 0
-    local yt_state = timeline and read_kv_file(YOUTUBE_STATE_PATH) or {}
-    local yt_problem = "Open a timeline to scan its audio"
-    if timeline then yt_problem = youtube_state_problem(timeline, fps) end
-    local report = read_all(LATEST_AD_SAFETY_JSON_PATH) or ""
+    local yt_problem, yt_state = "Open a timeline to scan its audio", nil
+    if timeline then yt_problem, yt_state = youtube_state_problem(project, timeline, fps) end
+    local report = yt_state and read_all(LATEST_AD_SAFETY_JSON_PATH) or ""
+    local rows = yt_state and parse_ad_safety_tsv(LATEST_AD_SAFETY_PATH) or {}
+    yt_state = yt_state or {}
     local engine = parse_string(report, "transcription_engine", "not scanned")
     local device = parse_string(report, "transcription_device", "")
     local model = parse_string(report, "runtime_model", "")
@@ -3031,6 +3089,7 @@ function M.get_ui_snapshot()
         project = project and tostring(project:GetName() or "") or "",
         timeline = timeline and tostring(timeline:GetName() or "") or "",
         timeline_id = timeline and timeline_id(timeline) or "",
+        context_key = ui_context_key(project, timeline),
         fps = fps,
         duration_seconds = duration_seconds,
         duration_text = human_duration(duration_seconds),
@@ -3041,6 +3100,7 @@ function M.get_ui_snapshot()
         youtube_high = high,
         youtube_review = review,
         youtube_events = event_count,
+        youtube_rows = rows,
         youtube_scanned_at = scanned_at,
         youtube_scanned_text = scanned_at and os.date("%Y-%m-%d %H:%M", scanned_at) or "Never",
         runtime_engine = engine,
@@ -3052,13 +3112,15 @@ function M.get_ui_snapshot()
 end
 
 function M.get_youtube_events()
-    if not file_exists(LATEST_AD_SAFETY_PATH) then return {} end
+    local project, timeline = current_project_timeline()
+    if not timeline or youtube_state_problem(project, timeline, get_fps(timeline)) then return {} end
     return parse_ad_safety_tsv(LATEST_AD_SAFETY_PATH)
 end
 
 function M.jump_to_youtube_seconds(seconds)
-    local _, _, timeline = get_context()
+    local _, project, timeline = get_context()
     local fps = get_fps(timeline)
+    validate_youtube_state(project, timeline, fps)
     local rel_frame = math.max(0, math.floor((tonumber(seconds) or 0) * fps + 0.5))
     local tc = relative_frame_to_timecode(timeline, rel_frame, fps)
     if not timeline:SetCurrentTimecode(tc) then fail("Could not move playhead to " .. tc) end
@@ -3196,6 +3258,7 @@ function M.start_youtube_safety_scan()
         project = project,
         timeline = timeline,
         timeline_id = timeline_id(timeline),
+        context_key = ui_context_key(project, timeline),
         fps = fps,
         run_dir = run_dir,
         out_tsv = run_dir .. "/ad_safety.tsv",
@@ -3272,7 +3335,7 @@ function M.poll_youtube_safety_scan(job)
     if not file_exists(job.exit_path) then return base end
 
     local code = tonumber((read_all(job.exit_path) or ""):match("%-?%d+")) or 1
-    if code ~= 0 then
+    if code ~= 0 or job.cancel_requested then
         job.finished = true
         local cancelled = job.cancel_requested == true
         local result = {
@@ -3289,12 +3352,15 @@ function M.poll_youtube_safety_scan(job)
     end
 
     local ok, err = pcall(function()
+        if ui_context_key(job.project, job.timeline) ~= job.context_key then
+            fail("Timeline changed during scan. Run the scan again.")
+        end
         local events = parse_ad_safety_tsv(job.out_tsv)
         local cfg = load_config()
         local added, high_count, review_count = add_ad_safety_markers(job.timeline, job.fps, events, cfg)
         copy_file(job.out_tsv, LATEST_AD_SAFETY_PATH)
         copy_file(job.out_json, LATEST_AD_SAFETY_JSON_PATH)
-        write_youtube_state(job.timeline, job.fps, events)
+        write_youtube_state(job.project, job.timeline, job.fps, events)
         job.result = { added = added, high_count = high_count, review_count = review_count, event_count = #events }
         notify(string.format("YouTube scan: %d markers (%d high, %d review).", added, high_count, review_count))
     end)
