@@ -47,7 +47,7 @@ local YT_MUTED_CUSTOM = "streamer_voice_youtube_muted_v1"
 -- Distinct from Voice (Green/Yellow/Blue) and Pauses (Purple/Red).
 local YT_REVIEW_COLOR = "Cyan"
 local YT_HIGH_COLOR = "Pink"
-local YT_PERSONAL_COLOR = "Orange"
+local YT_PERSONAL_COLOR = "Sand"
 local YT_MUTED_COLOR = "Fuchsia"
 
 local defaults = {
@@ -1659,13 +1659,29 @@ local function validate_youtube_state(project, timeline, fps)
     return state
 end
 
+local function free_youtube_marker_frame(marker, occupied, limit)
+    local frame = marker.start_frame + 1
+    while frame < marker.end_frame and occupied[frame] do frame = frame + 1 end
+    if frame < marker.end_frame then return frame end
+
+    -- If the entire interval is occupied, move the marker to the nearest free frame.
+    local left, right = marker.start_frame - 1, marker.end_frame
+    while left >= 0 and occupied[left] do left = left - 1 end
+    while right < limit and occupied[right] do right = right + 1 end
+    if left >= 0 and (right >= limit or marker.start_frame - left <= right - marker.start_frame) then
+        return left
+    end
+    if right < limit then return right end
+end
+
 local function add_ad_safety_markers(timeline, fps, events, cfg)
-    delete_markers(timeline, "youtube")
+    local limit = math.floor(timeline_span(timeline))
+    if limit <= 0 then return 0, 0, 0 end
     local pad = math.max(0, tonumber(cfg.ad_safety_marker_pad_seconds) or 0.15)
-    local high_count, review_count, added = 0, 0, 0
+    local markers, by_note = {}, {}
     for i, e in ipairs(events) do
-        local start_frame = math.max(0, math.floor(math.max(0, e.start - pad) * fps + 0.5))
-        local end_frame = math.max(start_frame + 1, math.floor((e.finish + pad) * fps + 0.5))
+        local start_frame = math.min(limit - 1, math.floor(math.max(0, e.start - pad) * fps + 0.5))
+        local end_frame = math.min(limit, math.max(start_frame + 1, math.floor((e.finish + pad) * fps + 0.5)))
         local is_high = e.severity == "high"
         local is_personal = e.category == "directed_insult"
         local color = is_personal and YT_PERSONAL_COLOR or (is_high and YT_HIGH_COLOR or YT_REVIEW_COLOR)
@@ -1680,12 +1696,67 @@ local function add_ad_safety_markers(timeline, fps, events, cfg)
             tonumber(e.confidence) or 0, tostring(e.context or ""),
             (e.auto_censor == false or category == "frequent_profanity") and "Manual review only" or "Eligible for Auto Censor"
         )
-        if timeline:AddMarker(start_frame, color, name, note, end_frame - start_frame, custom) then
-            added = added + 1
-            if is_high then high_count = high_count + 1 else review_count = review_count + 1 end
+        local marker = {
+            start_frame = start_frame, end_frame = end_frame, high = is_high,
+            color = color, name = name, note = note, custom = custom,
+        }
+        markers[i] = marker
+        by_note[note] = marker
+    end
+
+    local occupied = {}
+    for frame, data in pairs(timeline:GetMarkers() or {}) do
+        local custom = marker_field(data, "customData")
+        local name, note = marker_field(data, "name"), marker_field(data, "note")
+        local owned = custom == YT_HIGH_CUSTOM or custom == YT_REVIEW_CUSTOM
+            or (custom == "" and name:sub(1, 4) == "[YT]" and note:match("^YouTube audio flag #%d+\n"))
+        local keep = true
+        if owned then
+            local marker = by_note[note]
+            if marker and not marker.placed and marker.name == name and marker.custom == custom
+                and marker.color == marker_field(data, "color") then
+                marker.placed = true
+            else
+                keep = not timeline:DeleteMarkerAtFrame(tonumber(frame))
+            end
+        end
+        if keep then occupied[tonumber(frame)] = true end
+    end
+
+    local function place(marker, frame)
+        local duration = frame >= marker.start_frame and frame < marker.end_frame and marker.end_frame - frame or 1
+        if timeline:AddMarker(frame, marker.color, marker.name, marker.note, duration, marker.custom) then
+            occupied[frame] = true
+            marker.placed = true
         end
     end
+
+    -- Give findings at distinct frames their original positions before displacing collisions.
+    for _, marker in ipairs(markers) do
+        if not marker.placed and not occupied[marker.start_frame] then place(marker, marker.start_frame) end
+    end
+    local high_count, review_count = 0, 0
+    for _, marker in ipairs(markers) do
+        if not marker.placed and occupied[marker.start_frame] then
+            local frame = free_youtube_marker_frame(marker, occupied, limit)
+            if frame then place(marker, frame) end
+        end
+        if marker.placed then
+            if marker.high then high_count = high_count + 1 else review_count = review_count + 1 end
+        end
+    end
+    local added = high_count + review_count
     return added, high_count, review_count
+end
+
+function M.rebuild_youtube_markers()
+    local _, project, timeline = get_context()
+    local fps = get_fps(timeline)
+    validate_youtube_state(project, timeline, fps)
+    local events = parse_ad_safety_tsv(LATEST_AD_SAFETY_PATH)
+    local placed = add_ad_safety_markers(timeline, fps, events, load_config())
+    notify(string.format("YouTube markers: %d/%d placed from the saved scan.", placed, #events))
+    return placed, #events
 end
 
 function M.scan_youtube_safety()
