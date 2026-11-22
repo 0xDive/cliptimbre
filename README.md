@@ -1,52 +1,44 @@
 # ClipTimbre for DaVinci Resolve
 
-Find a selected voice, mark or shorten pauses, and review potentially sensitive dialogue before exporting. ClipTimbre runs in DaVinci Resolve Studio and processes audio on your computer. It was previously called Streamer Voice.
+A DaVinci Resolve Studio panel for finding a selected voice, shortening pauses and reviewing dialogue before export. Audio processing runs locally.
 
-[Инструкция на русском](README.ru.md) · [Changelog](CHANGELOG.md)
+[Русский](README.ru.md) · [Releases](https://github.com/0xDive/cliptimbre/releases)
 
 ![ClipTimbre dashboard in DaVinci Resolve Studio](docs/screenshots/dashboard.png)
 
 [Settings screenshot](docs/screenshots/settings.png)
 
-## Install
+## Install and uninstall
 
-Use **DaVinci Resolve Studio 21** from Blackmagic Design and a standard **Python 3.12** installation (**3.11** on Intel Macs). Close Resolve, then run the matching command from this directory.
+Install **DaVinci Resolve Studio 21** and **Python 3.12** (**3.11** on Intel Macs). On Windows on Arm, use x64 Python. Close Resolve before installing or uninstalling.
 
-| Platform | Command |
-| --- | --- |
-| macOS | `./install_macos.sh` |
-| Windows | `.\install_windows.cmd` |
-| Linux | `python3.12 install.py` |
+For a tagged version, follow the instructions on its release page. To use this checkout, run the matching command from this directory.
 
-On Windows on Arm, use x64 Python. On Linux, install `zenity` for dialogs and `xdotool` for range-based pause removal on X11. macOS is verified in Resolve Studio 21.0.4. The Windows and Linux paths have yet to be verified in live Resolve sessions. The panel requires Resolve's desktop Scripting API. [Blackmagic feature matrix](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_Studio_21_Features.pdf)
+| Platform | Install | Uninstall |
+| --- | --- | --- |
+| macOS | `bash ./install_macos.sh` | `bash ./uninstall_macos.sh` |
+| Windows | `.\install_windows.cmd` | `.\uninstall_windows.cmd` |
+| Linux | `bash ./install_linux.sh` | `bash ./uninstall_linux.sh` |
 
-Restart Resolve and open **Workspace → Scripts → ClipTimbre**. The first install downloads Python packages. Speaker recognition and transcription download model weights when first used.
+Start Resolve and open **Workspace → Scripts → ClipTimbre**. The first install downloads Python packages. Speaker recognition and transcription download model weights on first use.
 
-The installer reuses a working runtime and existing Streamer Voice data in `~/.streamer_voice`. It backs up replaced scripts and installs one menu item. Fresh Apple Silicon installs include MLX Whisper. Fresh Windows and Linux installs use CPU PyTorch wheels by default. Pass `--pytorch-index URL` to select a compatible GPU build.
+Installation preserves existing settings and voice profiles. Uninstall removes the menu item and keeps local data and the Python runtime. Fresh Windows and Linux installs use CPU PyTorch wheels by default. Pass `--pytorch-index URL` to install a compatible GPU build. Fresh Apple Silicon installs include MLX Whisper.
 
-Run the installation command for your platform with `--uninstall` to remove the menu item. Profiles, settings, generated media and runtime files stay in the data directory.
+On Linux, use `zenity` for dialogs. Ripple Delete inside clips requires X11 and `xdotool` on Linux, and Accessibility permission on macOS. The panel was tested in Resolve Studio 21.0.4 on macOS. Windows and Linux still need testing in Resolve. [Studio feature matrix](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_Studio_21_Features.pdf)
 
 ## Use
 
-1. **Voice.** Choose a saved voice profile from the dropdown or enter a name to create one. Save samples in the active profile or set a temporary reference from the playhead. Find matching speech and navigate its duration markers. **Correct** and **Wrong** calibrate the profile threshold.
-2. **Pauses.** Run **Find voice**, then mark pauses inside matches. Review the markers before **Tighten pauses**. By default, Tighten creates a backup. Clip-aligned pauses use Resolve's native ripple delete. Range edits inside clips need Accessibility on macOS and X11 with `xdotool` on Linux.
-3. **YouTube Safety.** Scan the current timeline with local Whisper transcription. Select a flagged phrase to read its context in the scrollable panel. Changing projects or timelines clears any mismatched report from view. **Edit risk rules** opens the local rules file. New installs include starter English and Russian rules. The scan is an editorial aid and does not predict YouTube decisions.
-4. **Auto Censor.** Choose **Beep**, **Smooth Mute**, or **Timeline Mute** to create a processed timeline copy. Timeline Mute leaves gaps on the existing tracks and uses short rendered edge clips for fades when the source mapping can be resolved. Keep these WAVs in place while the project references them.
+1. **Voice.** Select or create a voice profile. Save samples in the active profile or set a temporary reference from the playhead. **Find voice** marks matches. **Correct** and **Wrong** calibrate the profile threshold.
+2. **Pauses.** After finding matches, mark and review pauses before running **Tighten pauses**. It creates a timeline backup by default and uses native Ripple Delete at clip boundaries.
+3. **YouTube Safety.** Scan the current timeline with local Whisper transcription. Select a flagged phrase to read its context. **Edit risk rules** opens the local rules file. The scan helps with editorial review.
+4. **Auto Censor.** Choose **Beep**, **Smooth Mute** or **Timeline Mute** to create a processed timeline copy. Timeline Mute keeps separate tracks and adds fades when audio can be mapped to the source. Keep the generated WAV files while the project references them.
 
-Set `"audio_source_mode": "render"` in `~/.streamer_voice/config.json` if analysis needs the processed Resolve mix. The **Diagnostics** page opens the log and data folder. Reports, media paths, profiles and generated audio stay in the local data directory.
+**Diagnostics → Open data folder** opens the settings and reports. Set `"audio_source_mode": "render"` in `config.json` to analyze the processed Resolve mix.
 
-## Source and verification
+## Development
 
-- `backend/` contains speaker analysis, transcription and audio processing.
-- `resolve_lua/` contains the panel and timeline integration.
-- `install.py` installs the panel, runtime and starter configuration.
-
-Run `python -m compileall -q backend install.py` to check Python syntax. Run `luajit -b resolve_lua/launcher/ClipTimbre.lua /dev/null` and `luajit -b resolve_lua/streamer_voice_common.lua /dev/null` to check the Lua sources.
-
-Before release, verify menu startup, settings, a single-clip and a cut timeline, pause markers, and all three censor modes in a disposable Resolve project. Make sure a report attached to an issue contains no private transcript or local media path.
+`backend/` contains audio processing, `resolve_lua/` contains the panel and timeline integration, and `install.py` manages installation. Run `python -m unittest discover -s tests` for installer tests.
 
 ## License
 
-Copyright © 2026 ClipTimbre contributors. ClipTimbre is licensed under the [GNU Affero General Public License, version 3 only](LICENSE), with a [DaVinci Resolve interoperability permission](LICENSE-RESOLVE-EXCEPTION.md).
-
-If you distribute a modified version, provide its corresponding source under AGPLv3. If users interact with your modified version remotely over a network, offer that source to those users as well.
+[AGPLv3](LICENSE) · [DaVinci Resolve interoperability permission](LICENSE-RESOLVE-EXCEPTION.md)

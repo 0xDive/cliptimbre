@@ -523,7 +523,7 @@ function M.set_reference()
         rel_frame,
         "Blue",
         MARKER_PREFIX .. " REFERENCE",
-        string.format("Streamer voice reference: %.1fs from playhead", duration_sec),
+        string.format("Voice reference: %.1fs from playhead", duration_sec),
         duration_frames,
         REF_CUSTOM
     )
@@ -981,7 +981,7 @@ local function run_backend(source, state, cfg, out_json, out_tsv, analysis_id)
     local q = {}
     for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
     local cmd = table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
-    notify(source.kind == "manifest" and "Finding streamer voice across cut timeline…" or "Finding streamer voice…")
+    notify(source.kind == "manifest" and "Finding voice across cut timeline…" or "Finding voice…")
     log("Running backend source_mode=" .. tostring(source.mode or source.kind))
     local r1, r2, r3 = os.execute(cmd)
     if not command_ok(r1, r2, r3) then
@@ -1309,7 +1309,7 @@ function M.mark_streamer_pauses()
     if math.abs(current_fps - fps) > 0.01 or
         (analyzed_span and analyzed_span >= 0 and math.abs(timeline_span(timeline) - analyzed_span) > 1) or
         (analysis_state.layout and analysis_state.layout ~= timeline_layout(timeline, {"audio"})) then
-        fail("Timeline audio changed after Find. Run Find Streamer again")
+        fail("Timeline audio changed after Find. Run Find voice again")
     end
 
     local layout = timeline_layout(timeline, {"audio", "video", "subtitle"})

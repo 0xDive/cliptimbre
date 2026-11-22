@@ -1,4 +1,4 @@
--- ClipTimbre 0.16.0 launcher for DaVinci Resolve.
+-- ClipTimbre launcher for DaVinci Resolve.
 -- GNU AGPL version 3 only. See LICENSE and LICENSE-RESOLVE-EXCEPTION.md.
 
 local PATH_SEP = package.config:sub(1, 1)
@@ -6,6 +6,13 @@ local IS_WINDOWS = PATH_SEP == "\\"
 local home = IS_WINDOWS and (os.getenv("USERPROFILE") or os.getenv("HOME") or "") or (os.getenv("HOME") or os.getenv("USERPROFILE") or "")
 local data_dir = os.getenv("STREAMER_VOICE_DATA_DIR") or home .. "/.streamer_voice"
 local common_path = data_dir .. "/resolve/streamer_voice_common.lua"
+local version_file = io.open(data_dir .. "/VERSION", "rb")
+local version_label = "Version unavailable"
+if version_file then
+    local version = (version_file:read("*l") or ""):match("^%s*(%d+%.%d+%.%d+)%s*$")
+    if version then version_label = "v" .. version end
+    version_file:close()
+end
 
 local function file_exists(path)
     local f = io.open(path, "rb")
@@ -86,7 +93,7 @@ local win = disp:AddWindow({
 
         Spacing = 2,
         ui:Label { ID = "HeaderTitle", Text = "ClipTimbre", StyleSheet = STYLE_TITLE, Weight = 0 },
-        ui:Label { ID = "HeaderRuntime", Text = "v0.16.0", StyleSheet = STYLE_MUTED, Weight = 0 },
+        ui:Label { ID = "HeaderRuntime", Text = version_label, StyleSheet = STYLE_MUTED, Weight = 0 },
         ui:Label { ID = "HeaderContext", Text = "", StyleSheet = STYLE_MICRO, WordWrap = true, Weight = 0 },
     },
 
@@ -183,7 +190,7 @@ local win = disp:AddWindow({
             ui:HGroup {
                 Weight = 0, Spacing = 7,
                 ui:Button { ID = "SetReference", Text = "Set temporary reference", Weight = 0 },
-                ui:Button { ID = "FindStreamer", Text = "Find streamer voice", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
+                ui:Button { ID = "FindStreamer", Text = "Find voice", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
                 ui:HGap(0, 1),
             },
 
@@ -674,7 +681,7 @@ local function update_snapshot(message)
         itm.YTCountPersonal.Text = "PERSONAL 0"
         itm.CardYouTube.Text = "Timeline unavailable"
         itm.CardYouTubeMeta.Text = ""
-        itm.HeaderRuntime.Text = "v0.16.0"
+        itm.HeaderRuntime.Text = version_label
         itm.YTScanRuntime.Text = "Runtime: unavailable"
         itm.SettingEngineRuntime.Text = "Current runtime: unavailable"
         itm.FooterDot.StyleSheet = STYLE_ERROR
@@ -701,7 +708,7 @@ local function update_snapshot(message)
         compact_context(snap.project .. "  /  " .. snap.timeline, 72) or "Open a timeline in Resolve to start editing"
     local rt = tostring(snap.runtime_engine or "not scanned")
     if tostring(snap.runtime_device or "") ~= "" then rt = rt .. " / " .. tostring(snap.runtime_device) end
-    itm.HeaderRuntime.Text = "Runtime: " .. rt .. "  •  v0.16.0"
+    itm.HeaderRuntime.Text = "Runtime: " .. rt .. "  •  " .. version_label
     itm.CardTimeline.Text = timeline_available and compact_context(snap.timeline, 36) or "No timeline open"
     itm.CardTimeline.ToolTip = snap.timeline
     itm.CardDuration.Text = timeline_available and string.format("%s  •  %.3g fps", snap.duration_text, snap.fps) or ""
@@ -959,15 +966,15 @@ end
 
 -- Dashboard -----------------------------------------------------------------
 function win.On.DashScanYouTube.Clicked(ev) if active_scan then cancel_youtube_scan() else start_youtube_scan() end end
-function win.On.DashFindVoice.Clicked(ev) run_action("Find streamer", sv.find_streamer) end
+function win.On.DashFindVoice.Clicked(ev) run_action("Find voice", sv.find_streamer) end
 function win.On.DashSetReference.Clicked(ev) run_action("Set reference", sv.set_reference) end
 
 -- Voice ---------------------------------------------------------------------
 function win.On.SetReference.Clicked(ev) run_action("Set reference", sv.set_reference) end
-function win.On.FindStreamer.Clicked(ev) run_action("Find streamer", sv.find_streamer) end
-function win.On.PrevStreamer.Clicked(ev) run_action("Previous streamer region", sv.previous_streamer) end
-function win.On.NextStreamer.Clicked(ev) run_action("Next streamer region", sv.next_streamer) end
-function win.On.ClearStreamer.Clicked(ev) run_action("Clear streamer markers", sv.clear_markers) end
+function win.On.FindStreamer.Clicked(ev) run_action("Find voice", sv.find_streamer) end
+function win.On.PrevStreamer.Clicked(ev) run_action("Previous voice match", sv.previous_streamer) end
+function win.On.NextStreamer.Clicked(ev) run_action("Next voice match", sv.next_streamer) end
+function win.On.ClearStreamer.Clicked(ev) run_action("Clear voice markers", sv.clear_markers) end
 function win.On.ProfileChoice.Activated(ev)
     local name = profile_choices[itm.ProfileChoice.CurrentIndex + 1]
     if not name or name == selected_profile then return end

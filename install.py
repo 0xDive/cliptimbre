@@ -15,8 +15,8 @@ import sys
 import tempfile
 import venv
 
-VERSION = "0.16.0"
 ROOT = Path(__file__).resolve().parent
+VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
 DATA = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice").resolve()
 SOURCE_LAUNCHER = ROOT / "resolve_lua" / "launcher" / "ClipTimbre.lua"
 LAUNCHER_HEADER = b"-- ClipTimbre "
@@ -122,6 +122,7 @@ def install(utility: Path, pytorch_index: str | None) -> None:
     files = {
         **{DATA / "backend" / p.name: p for p in (ROOT / "backend").glob("*.py")},
         DATA / "resolve/streamer_voice_common.lua": ROOT / "resolve_lua/streamer_voice_common.lua",
+        DATA / "VERSION": ROOT / "VERSION",
         launcher: SOURCE_LAUNCHER,
     }
     installed_files = list(legacy_launchers) + [
