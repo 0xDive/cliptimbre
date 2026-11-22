@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "note": "Starter English and Russian review rules. Add terms for your channel in the installed rules file.",
+  "rules": [
+    {
+      "id": "en-strong-profanity",
+      "category": "strong_profanity",
+      "severity": "review",
+      "label": "Strong profanity",
+      "patterns": [
+        "\\b(?:fuck(?:ing|ed|er|s)?|motherfucker|bullshit)\\b"
+      ]
+    },
+    {
+      "id": "en-moderate-profanity",
+      "category": "moderate_profanity",
+      "severity": "review",
+      "label": "Profanity",
+      "patterns": [
+        "\\b(?:shit(?:ty)?|asshole|bitch)\\b"
+      ]
+    },
+    {
+      "id": "ru-strong-profanity",
+      "category": "strong_profanity",
+      "severity": "review",
+      "label": "Мат",
+      "patterns": [
+        "\\b(?:бля(?:ть|дь)?|пиздец|сука|хуй|хуя|ебать|ебаный|ебаная)\\b"
+      ]
+    },
+    {
+      "id": "ru-moderate-profanity",
+      "category": "moderate_profanity",
+      "severity": "review",
+      "label": "Грубая лексика",
+      "patterns": [
+        "\\b(?:дерьмо|мудак|мудаки|пошел\\s+нахрен)\\b"
+      ]
+    }
+  ]
+}
