@@ -7,9 +7,6 @@ import json
 import sys
 from pathlib import Path
 
-from timeline_audio import SAMPLE_RATE, decode_mono_16k, load_manifest_mono_16k, source_identity
-
-
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
@@ -51,65 +48,68 @@ def find_pause_candidates(
     review_max_pause: float,
     edge_protect: float,
     min_delete: float,
+    speech_matches: list[dict] | None = None,
 ) -> list[dict]:
     pauses: list[dict] = []
     speech = normalize_speech(speech)
-    previous_gap_end = 0.0
-    for seg_index, seg in enumerate(segments, 1):
-        seg_start = float(seg.get("start", 0.0))
-        seg_end = float(seg.get("end", 0.0))
-        if seg_end - seg_start <= max(0.0, edge_protect * 2 + min_pause):
+    regions = normalize_speech([(float(seg["start"]), float(seg["end"])) for seg in segments])
+    matches = normalize_speech([
+        (float(seg["start"]), float(seg["end"])) for seg in (speech_matches or [])
+    ])
+    if not regions:
+        return []
+
+    def confirmed(start: float, end: float) -> bool:
+        overlap = sum(b - a for a, b in speech_inside_segment(matches, start, end))
+        return overlap >= min(0.18, (end - start) * 0.60)
+
+    for (left_start, gap_start), (gap_end, right_end) in zip(speech, speech[1:]):
+        gap = gap_end - gap_start
+        if not min_pause <= gap <= review_max_pause:
             continue
-
-        voiced = speech_inside_segment(speech, seg_start, seg_end)
-        if len(voiced) < 2:
+        index = bisect_right(regions, gap_start, key=lambda span: span[0]) - 1
+        inside = index >= 0 and gap_end <= regions[index][1]
+        both_sides = confirmed(max(left_start, gap_start - 0.9), gap_start) and confirmed(
+            gap_end, min(right_end, gap_end + 0.9)
+        )
+        if not inside and not both_sides:
             continue
-
-        protected_start = seg_start + edge_protect
-        protected_end = seg_end - edge_protect
-        for (_, left_end), (right_start, _) in zip(voiced, voiced[1:]):
-            gap_start = left_end
-            gap_end = right_start
-            gap = gap_end - gap_start
-            if gap < min_pause or gap_start < previous_gap_end:
-                continue
-            # Do not auto-tighten close to uncertain streamer block edges.
-            if gap_start < protected_start or gap_end > protected_end:
-                continue
-            if gap > review_max_pause:
-                continue
-
-            action = "auto" if gap <= max_auto_pause else "review"
-            keep = min(target_pause, gap)
-            # Keep the pause centered. This avoids shaving a consonant from either side
-            # when VAD is a few frames early/late.
-            keep_left = keep * 0.5
-            keep_right = keep - keep_left
-            delete_start = gap_start + keep_left
-            delete_end = gap_end - keep_right
-            delete_duration = max(0.0, delete_end - delete_start)
-            if action == "auto" and delete_duration < min_delete:
-                continue
-
-            previous_gap_end = gap_end
-            pauses.append(
-                {
-                    "index": len(pauses) + 1,
-                    "streamer_segment": seg_index,
-                    "start": gap_start,
-                    "end": gap_end,
-                    "duration": gap,
-                    "target": keep,
-                    "delete_start": delete_start,
-                    "delete_end": delete_end,
-                    "delete_duration": delete_duration,
-                    "action": action,
-                }
-            )
+        # Older reports contain only grouped voice ranges. Keep their existing
+        # safety margin until a fresh scan provides independent speaker evidence.
+        safely_inside = inside and gap_start >= regions[index][0] + edge_protect and gap_end <= regions[index][1] - edge_protect
+        keep = min(target_pause, gap)
+        delete_start = gap_start + keep * 0.5
+        delete_end = gap_end - keep * 0.5
+        delete_duration = max(0.0, delete_end - delete_start)
+        if delete_duration < min_delete:
+            continue
+        if gap > max_auto_pause:
+            reason = "long"
+        elif not safely_inside:
+            reason = "near_boundary"
+        elif speech_matches is not None and not both_sides:
+            reason = "unconfirmed_voice"
+        else:
+            reason = ""
+        pauses.append({
+            "index": len(pauses) + 1,
+            "streamer_segment": max(1, index + 1),
+            "start": gap_start,
+            "end": gap_end,
+            "duration": gap,
+            "target": keep,
+            "delete_start": delete_start,
+            "delete_end": delete_end,
+            "delete_duration": delete_duration,
+            "action": "review" if reason else "auto",
+            "reason": reason,
+        })
     return pauses
 
 
 def main() -> int:
+    from timeline_audio import SAMPLE_RATE, decode_mono_16k, load_manifest_mono_16k, source_identity
+
     p = argparse.ArgumentParser(description="Find removable silent pauses inside known streamer regions")
     source = p.add_mutually_exclusive_group(required=True)
     source.add_argument("--audio")
@@ -194,6 +194,7 @@ def main() -> int:
         review_max_pause=max(args.max_auto_pause, args.review_max_pause),
         edge_protect=max(0.0, args.edge_protect),
         min_delete=max(0.05, args.min_delete),
+        speech_matches=payload.get("speech_matches"),
     )
 
     auto = [x for x in pauses if x["action"] == "auto"]
@@ -205,14 +206,14 @@ def main() -> int:
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# start\tend\tduration\ttarget\tdelete_start\tdelete_end\tdelete_duration\taction\tstreamer_segment"]
+    lines = ["# start\tend\tduration\ttarget\tdelete_start\tdelete_end\tdelete_duration\taction\tstreamer_segment\treason"]
     if args.plan_id:
         lines.insert(0, f"# plan {args.plan_id}")
     for x in pauses:
         lines.append(
             f"{x['start']:.6f}\t{x['end']:.6f}\t{x['duration']:.6f}\t{x['target']:.6f}\t"
             f"{x['delete_start']:.6f}\t{x['delete_end']:.6f}\t{x['delete_duration']:.6f}\t"
-            f"{x['action']}\t{x['streamer_segment']}"
+            f"{x['action']}\t{x['streamer_segment']}\t{x['reason']}"
         )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

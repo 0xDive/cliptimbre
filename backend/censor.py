@@ -48,8 +48,7 @@ def build_intervals(
     for event in report.get("events") or []:
         category = str(event.get("category") or "")
         severity = str(event.get("severity") or "review")
-        # This is a synthetic whole-video warning, not a spoken word interval.
-        if category == "frequent_profanity":
+        if category == "frequent_profanity" or event.get("auto_censor") is False:
             continue
         if categories and "all" not in categories and category not in categories:
             continue

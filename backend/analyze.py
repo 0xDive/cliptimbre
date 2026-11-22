@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 from bisect import bisect_left, bisect_right
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 import hashlib
 import json
 import math
@@ -21,7 +21,7 @@ from speechbrain.inference.speaker import SpeakerRecognition
 from timeline_audio import decode_mono_16k, load_manifest_mono_16k, source_identity
 
 SAMPLE_RATE = 16000
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 APP_DIR = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice")
 
 
@@ -88,8 +88,7 @@ def collect_reference_speech(ref: torch.Tensor, vad_model) -> torch.Tensor:
     return torch.cat([ref[start:end] for start, end in segs])
 
 
-def active_profile_reference_paths() -> tuple[str | None, list[Path]]:
-    app = APP_DIR
+def active_profile_reference_paths(app: Path = APP_DIR) -> tuple[str | None, list[Path]]:
     active = app / "active_profile.txt"
     if not active.exists():
         return None, []
@@ -140,15 +139,20 @@ def window_metadata(
 
 
 def window_batches(
-    wav: torch.Tensor, meta: list[dict], window_samples: int, batch_size: int
-) -> Iterator[torch.Tensor]:
+    wav: torch.Tensor, meta: list[dict], batch_size: int
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     for offset in range(0, len(meta), batch_size):
-        batch = torch.zeros((min(batch_size, len(meta) - offset), window_samples), dtype=wav.dtype)
-        for row, window in enumerate(meta[offset : offset + batch_size]):
-            start = round(window["start"] * SAMPLE_RATE)
-            end = round(window["end"] * SAMPLE_RATE)
+        ranges = [
+            (round(window["start"] * SAMPLE_RATE), round(window["end"] * SAMPLE_RATE))
+            for window in meta[offset : offset + batch_size]
+        ]
+        width = max(end - start for start, end in ranges)
+        batch = wav.new_zeros((len(ranges), width))
+        lengths = torch.empty(len(ranges), dtype=torch.float32)
+        for row, (start, end) in enumerate(ranges):
             batch[row, : end - start] = wav[start:end]
-        yield batch
+            lengths[row] = (end - start) / width
+        yield batch, lengths
 
 
 def evidence_hits(meta: list[dict], scores: list[float], threshold: float, hop_seconds: float) -> list[dict]:
@@ -175,6 +179,14 @@ def evidence_hits(meta: list[dict], scores: list[float], threshold: float, hop_s
             center = (start + end) * 0.5
             evidence_start = max(speech_start, center - half_cell)
             evidence_end = min(speech_end, center + half_cell)
+            if window_index > 0:
+                previous = meta[i - 1]
+                previous_center = (previous["start"] + previous["end"]) * 0.5
+                evidence_start = (center + previous_center) * 0.5
+            if window_index + 1 < window_count:
+                following = meta[i + 1]
+                following_center = (following["start"] + following["end"]) * 0.5
+                evidence_end = (center + following_center) * 0.5
 
             if window_index == 0 and i + 1 < len(meta):
                 n = meta[i + 1]
@@ -236,13 +248,18 @@ def encode_reference(model: SpeakerRecognition, wav: torch.Tensor, device: str) 
 
 
 def encode_batches(
-    model: SpeakerRecognition, batches: Iterator[torch.Tensor], device: str, *, total: int | None = None
+    model: SpeakerRecognition,
+    batches: Iterator[tuple[torch.Tensor, torch.Tensor | None]],
+    device: str,
+    *,
+    total: int | None = None,
 ) -> torch.Tensor:
     out: list[torch.Tensor] = []
     processed = 0
     with torch.inference_mode():
-        for batch in batches:
-            emb = model.encode_batch(batch.to(device))
+        for batch, lengths in batches:
+            wav_lens = None if lengths is None else lengths.to(device)
+            emb = model.encode_batch(batch.to(device), wav_lens=wav_lens)
             emb = emb.reshape(emb.shape[0], -1)
             out.append(F.normalize(emb.float(), dim=-1).cpu())
             processed += batch.shape[0]
@@ -263,9 +280,7 @@ def similarity_scores(ref_emb: torch.Tensor, embeddings: torch.Tensor) -> list[f
 def merge_hits(
     hits: list[dict],
     merge_gap: float,
-    pad_before: float,
-    pad_after: float,
-    audio_duration: float,
+    speech: Sequence[tuple[int, int]],
 ) -> list[dict]:
     if not hits:
         return []
@@ -274,7 +289,9 @@ def merge_hits(
     cur = dict(hits[0])
     cur["scores"] = [cur.pop("score")]
     for hit in hits[1:]:
-        if hit["start"] <= cur["end"] + merge_gap:
+        gap = hit["start"] - cur["end"]
+        voiced_gap = speech_overlap_seconds(speech, cur["end"], hit["start"])
+        if gap <= merge_gap and voiced_gap <= min(0.12, max(0.0, gap) * 0.35):
             cur["end"] = max(cur["end"], hit["end"])
             cur["scores"].append(hit["score"])
         else:
@@ -288,8 +305,8 @@ def merge_hits(
         scores = seg.pop("scores")
         out.append(
             {
-                "start": max(0.0, seg["start"] - pad_before),
-                "end": min(audio_duration, seg["end"] + pad_after),
+                "start": seg["start"],
+                "end": seg["end"],
                 "score": max(scores),
                 "mean_score": sum(scores) / len(scores),
                 "windows": len(scores),
@@ -298,7 +315,7 @@ def merge_hits(
     return out
 
 
-def speech_overlap_seconds(speech: list[tuple[int, int]], start_seconds: float, end_seconds: float) -> float:
+def speech_overlap_seconds(speech: Sequence[tuple[int, int]], start_seconds: float, end_seconds: float) -> float:
     if end_seconds <= start_seconds:
         return 0.0
     start_sample = int(round(start_seconds * SAMPLE_RATE))
@@ -333,7 +350,7 @@ def merge_streamer_pauses(
         gap_end = float(nxt["start"])
         gap = max(0.0, gap_end - gap_start)
         voiced = speech_overlap_seconds(speech, gap_start, gap_end)
-        normal_pause = gap <= pause_merge_gap and voiced <= pause_speech_tolerance
+        normal_pause = gap <= pause_merge_gap and voiced <= min(pause_speech_tolerance, gap * 0.35)
         silent_stop = gap <= long_silence_merge_gap and voiced <= long_silence_speech_tolerance
         bridge = normal_pause or silent_stop
 
@@ -362,7 +379,10 @@ def cache_key(identity: dict, args: argparse.Namespace) -> str:
     local_model = Path(args.model).expanduser()
     model_files = []
     if local_model.is_dir():
-        model_files = [audio_identity(path.resolve(), 0, None) for path in sorted(local_model.rglob("*")) if path.is_file()]
+        model_files = [
+            source_identity(path.resolve(), None, 0, None)
+            for path in sorted(local_model.rglob("*")) if path.is_file()
+        ]
     payload = {
         "version": CACHE_VERSION,
         "audio": identity,
@@ -500,7 +520,7 @@ def refine_one_boundary(
         return coarse, "coarse", None
 
     batch = torch.stack(chunks)
-    embeddings = encode_batches(speaker, iter(batch.split(batch_size)), device)
+    embeddings = encode_batches(speaker, ((chunk, None) for chunk in batch.split(batch_size)), device)
     scores = similarity_scores(ref_emb, embeddings)
     target_min = max(0.05, threshold - max(0.0, threshold_relax))
     best_t = coarse
@@ -551,11 +571,15 @@ def refine_segment_boundaries(
     threshold_relax: float,
     min_contrast: float,
 ) -> tuple[list[dict], dict]:
+    stats = {
+        "refined": 0, "vad": 0, "speaker_change": 0, "coarse": 0,
+        "mean_shift_seconds": 0.0, "max_shift_seconds": 0.0,
+    }
     if not enabled or not segments:
-        return segments, {"refined": 0, "vad": 0, "speaker_change": 0, "coarse": len(segments) * 2}
+        stats["coarse"] = len(segments) * 2
+        return segments, stats
 
     out: list[dict] = []
-    stats = {"refined": 0, "vad": 0, "speaker_change": 0, "coarse": 0}
     shifts: list[float] = []
     for idx, seg in enumerate(segments, 1):
         original_start = float(seg["start"])
@@ -642,6 +666,7 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=24)
     p.add_argument("--device", default="auto")
     p.add_argument("--model", default="speechbrain/spkrec-ecapa-voxceleb")
+    p.add_argument("--data-dir", type=Path, default=APP_DIR)
     p.add_argument("--cache-dir", default=str(APP_DIR / "cache"))
     p.add_argument("--cache", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--analysis-id")
@@ -683,7 +708,7 @@ def main() -> int:
             vad_model = load_silero_vad()
         return vad_model
 
-    profile_name, profile_paths = active_profile_reference_paths()
+    profile_name, profile_paths = active_profile_reference_paths(args.data_dir.expanduser())
     references: list[torch.Tensor] = []
     reference_mode = "profile" if profile_paths else "timeline"
     for ref_path in profile_paths:
@@ -755,7 +780,7 @@ def main() -> int:
         log(f"encoding {len(window_meta)} timeline windows on {speaker_device}")
 
         def encode_timeline(device: str) -> torch.Tensor:
-            batches = window_batches(get_wav(), window_meta, window_samples, args.batch_size)
+            batches = window_batches(get_wav(), window_meta, args.batch_size)
             return encode_batches(speaker, batches, device, total=len(window_meta))
 
         try:
@@ -778,7 +803,11 @@ def main() -> int:
 
     scores = similarity_scores(ref_emb, timeline_embeddings)
     hits = evidence_hits(window_meta, scores, args.threshold, args.hop)
-    segments = merge_hits(hits, args.merge_gap, args.pad_before, args.pad_after, duration)
+    segments = merge_hits(hits, args.merge_gap, speech)
+    speech_matches = [{"start": segment["start"], "end": segment["end"]} for segment in segments]
+    for segment in segments:
+        segment["start"] = max(0.0, segment["start"] - args.pad_before)
+        segment["end"] = min(duration, segment["end"] + args.pad_after)
     raw_segment_count = len(segments)
     segments = merge_streamer_pauses(
         segments,
@@ -874,6 +903,7 @@ def main() -> int:
         "boundary_refinement": boundary_stats,
         "cache_used": cached is not None,
         "cache_file": str(cache_path) if cache_path is not None else None,
+        "speech_matches": speech_matches,
         "segments": segments,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)

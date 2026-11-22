@@ -6,18 +6,16 @@ import importlib.util
 import json
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from timeline_audio import decode_mono_16k, load_manifest_mono_16k
-from directed_insults import DEFAULT_INSULT_RULES, classify_personal_insults
+from profanity import load_rules, normalize_text, review_transcript
 
 APP = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice")
 SAMPLE_RATE = 16000
@@ -32,56 +30,6 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
-
-
-def normalize_text(text: str) -> str:
-    text = text.lower().replace("ё", "е")
-    text = re.sub(r"[^0-9a-zа-я_-]+", " ", text, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-@dataclass
-class Rule:
-    id: str
-    category: str
-    severity: str
-    label: str
-    patterns: list[re.Pattern[str]]
-
-
-def load_rules(path: Path) -> list[Rule]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    rules: list[Rule] = []
-    for raw in payload.get("rules") or []:
-        patterns: list[re.Pattern[str]] = []
-        for value in raw.get("patterns") or []:
-            value = str(value).lower().replace("ё", "е")
-            patterns.append(re.compile(value, re.IGNORECASE | re.UNICODE))
-        if patterns:
-            rules.append(
-                Rule(
-                    id=str(raw.get("id") or raw.get("category") or "rule"),
-                    category=str(raw.get("category") or "review"),
-                    severity=str(raw.get("severity") or "review"),
-                    label=str(raw.get("label") or raw.get("category") or "Review"),
-                    patterns=patterns,
-                )
-            )
-    if not rules:
-        raise RuntimeError(f"No ad-safety rules found in {path}")
-    # Older installations intentionally keep their customized terms file.
-    # Until they choose to merge the new categories, supply the built-in
-    # personal-insult rules without touching that local file.
-    if not any(rule.category == "directed_insult" for rule in rules):
-        for raw in DEFAULT_INSULT_RULES:
-            rules.append(Rule(
-                id=str(raw["id"]),
-                category="directed_insult",
-                severity="review",
-                label=str(raw["label"]),
-                patterns=[re.compile(p, re.IGNORECASE | re.UNICODE) for p in raw["patterns"]],
-            ))
-    return rules
 
 
 def load_audio(args) -> np.ndarray:
@@ -568,109 +516,8 @@ def transcribe_audio(audio: np.ndarray, args, status_path: Path | None) -> tuple
     return transcribe_faster(audio, args, status_path, device)
 
 
-def match_segment(seg: dict[str, Any], rules: list[Rule]) -> list[dict[str, Any]]:
-    tokens = seg.get("words") or []
-    if not tokens:
-        return []
-
-    text_parts: list[str] = []
-    spans: list[tuple[int, int, dict[str, Any]]] = []
-    cursor = 0
-    for token in tokens:
-        value = token["norm"]
-        if text_parts:
-            cursor += 1
-        start = cursor
-        text_parts.append(value)
-        cursor += len(value)
-        spans.append((start, cursor, token))
-    text = " ".join(text_parts)
-
-    out: list[dict[str, Any]] = []
-    for rule in rules:
-        for pattern in rule.patterns:
-            for match in pattern.finditer(text):
-                overlapping = [tok for a, b, tok in spans if b > match.start() and a < match.end()]
-                if not overlapping:
-                    continue
-                phrase = text[match.start() : match.end()].strip()
-                out.append(
-                    {
-                        "start": float(overlapping[0]["start"]),
-                        "end": float(overlapping[-1]["end"]),
-                        "severity": rule.severity,
-                        "category": rule.category,
-                        "rule": rule.id,
-                        "label": rule.label,
-                        "phrase": phrase,
-                        "context": str(seg.get("text") or "").strip(),
-                        "confidence": min(float(t.get("probability", 0.0)) for t in overlapping),
-                    }
-                )
-    return out
-
-
-def deduplicate(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    severity_rank = {"review": 1, "high": 2}
-    events.sort(key=lambda x: (x["start"], x["end"], -severity_rank.get(x["severity"], 1)))
-    out: list[dict[str, Any]] = []
-    for event in events:
-        duplicate = None
-        for prev in reversed(out[-8:]):
-            if event["start"] > prev["end"] + 0.10:
-                break
-            same_area = abs(event["start"] - prev["start"]) <= 0.15 and abs(event["end"] - prev["end"]) <= 0.20
-            if same_area and event["category"] == prev["category"]:
-                duplicate = prev
-                break
-        if duplicate is None:
-            out.append(event)
-        elif severity_rank.get(event["severity"], 1) > severity_rank.get(duplicate["severity"], 1):
-            duplicate.update(event)
-    for i, event in enumerate(out, 1):
-        event["index"] = i
-    return out
-
-
-def profanity_density_events(events: list[dict[str, Any]], words: list[dict[str, Any]], duration: float) -> list[dict[str, Any]]:
-    # Personal insults may contain the very same strong profanity that was
-    # previously categorized as a general exclamation. Count once, not twice.
-    prof = [
-        e for e in events
-        if e["category"] in {"strong_profanity", "moderate_profanity"}
-        or (
-            e["category"] == "directed_insult"
-            and re.search(r"(?:еб|хуй|хуе|пизд|муд|сука|суч|долбоеб|уеб|fuck|asshole|bitch)", normalize_text(e["phrase"]))
-        )
-    ]
-    if len(prof) < 8 or not words or duration <= 0:
-        return []
-    density = len(prof) / max(1, len(words))
-    per_minute = len(prof) / max(duration / 60.0, 1 / 60.0)
-    if density < 0.012 and per_minute < 3.0:
-        return []
-    return [
-        {
-            "index": 0,
-            "start": 0.0,
-            "end": min(duration, 1.0),
-            "severity": "review",
-            "category": "frequent_profanity",
-            "rule": "profanity_density",
-            "label": "Frequent profanity across the video",
-            "phrase": f"{len(prof)} flagged profanities / {len(words)} words",
-            "context": f"density={density:.3%}; per_minute={per_minute:.2f}",
-            "confidence": 1.0,
-        }
-    ]
-
-
 def safe_tsv(value: object) -> str:
     return str(value or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
-
-
-def all_words(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [word for seg in segments for word in (seg.get("words") or [])]
 
 
 def run_worker(args) -> int:
@@ -687,26 +534,16 @@ def run_worker(args) -> int:
     write_status(status_path, "runtime_selection", duration_seconds=duration, progress_seconds=0.0)
 
     segment_records, runtime = transcribe_audio(audio, args, status_path)
-    words = all_words(segment_records)
     lang_prob = runtime.get("language_probability")
     prob_text = "n/a" if lang_prob is None else f"{float(lang_prob):.3f}"
     log(
         f"transcription done: engine={runtime.get('engine')} device={runtime.get('device')} "
-        f"language={runtime.get('language')} probability={prob_text} segments={len(segment_records)} words={len(words)}"
+        f"language={runtime.get('language')} probability={prob_text} segments={len(segment_records)}"
     )
     write_status(status_path, "matching_rules", duration_seconds=duration, progress_seconds=duration, **runtime)
 
-    events: list[dict[str, Any]] = []
-    for seg in segment_records:
-        events.extend(match_segment(seg, rules))
-    events = deduplicate(events)
-    events = classify_personal_insults(events, segment_records)
-    events = deduplicate(events)
-    density = profanity_density_events(events, words, duration)
-    if density:
-        events = density + events
-    for i, event in enumerate(events, 1):
-        event["index"] = i
+    events, word_count = review_transcript(segment_records, rules)
+    log(f"reviewed {word_count} timed words")
 
     counts: dict[str, int] = {}
     severity_counts = {"high": 0, "review": 0}
@@ -722,8 +559,8 @@ def run_worker(args) -> int:
 
     transcript_text = " ".join(seg["text"] for seg in segment_records if seg.get("text")).strip()
     payload = {
-        "version": 3,
-        "insult_classifier_version": 1,
+        "version": 4,
+        "insult_classifier_version": 2,
         "policy_mode": "conservative_audio_review",
         "disclaimer": "Audio transcript screening cannot guarantee a green monetization icon. YouTube also evaluates visuals, title, thumbnail, description and context.",
         "duration_seconds": duration,
@@ -749,11 +586,12 @@ def run_worker(args) -> int:
 
     out_tsv = Path(args.output).expanduser().resolve()
     out_tsv.parent.mkdir(parents=True, exist_ok=True)
-    lines = ["# start\tend\tseverity\tcategory\tlabel\tphrase\tcontext\tconfidence"]
+    lines = ["# start\tend\tseverity\tcategory\tlabel\tphrase\tcontext\tconfidence\tauto_censor"]
     for e in events:
         lines.append(
             f"{e['start']:.6f}\t{e['end']:.6f}\t{safe_tsv(e['severity'])}\t{safe_tsv(e['category'])}\t"
-            f"{safe_tsv(e['label'])}\t{safe_tsv(e['phrase'])}\t{safe_tsv(e['context'])}\t{float(e.get('confidence', 0.0)):.5f}"
+            f"{safe_tsv(e['label'])}\t{safe_tsv(e['phrase'])}\t{safe_tsv(e['context'])}\t"
+            f"{float(e.get('confidence', 0.0)):.5f}\t{int(e['auto_censor'])}"
         )
     out_tsv.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
