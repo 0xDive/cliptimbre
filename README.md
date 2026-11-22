@@ -2,9 +2,9 @@
 
 A DaVinci Resolve Studio panel for finding a selected voice, shortening pauses and reviewing dialogue before export. Audio processing runs locally.
 
-[Русский](README.ru.md) · [Releases](https://github.com/0xDive/cliptimbre/releases)
+[Русский](README.ru.md) · [GitHub](https://github.com/0xDive/cliptimbre) · [Releases](https://github.com/0xDive/cliptimbre/releases) · [Telegram](https://t.me/dev_dive)
 
-![ClipTimbre dashboard in DaVinci Resolve Studio](docs/screenshots/dashboard.png)
+![ClipTimbre with Voice expanded in DaVinci Resolve Studio](docs/screenshots/dashboard.png)
 
 [Settings screenshot](docs/screenshots/settings.png)
 
@@ -28,12 +28,17 @@ On Linux, use `zenity` for dialogs. Ripple Delete inside clips requires X11 and 
 
 ## Use
 
-1. **Voice.** Select or create a voice profile. Save samples in the active profile or set a temporary reference from the playhead. **Find voice** marks matches. **Correct** and **Wrong** calibrate the profile threshold.
-2. **Pauses.** After finding matches, mark and review pauses before running **Tighten pauses**. It creates a timeline backup by default and uses native Ripple Delete at clip boundaries.
-3. **YouTube Safety.** Scan the current timeline with local Whisper transcription. Select a flagged phrase to read its context. **Edit risk rules** opens the local rules file. The scan helps with editorial review.
-4. **Auto Censor.** Choose **Beep**, **Smooth Mute** or **Timeline Mute** to create a processed timeline copy. Timeline Mute keeps separate tracks and adds fades when audio can be mapped to the source. Keep the generated WAV files while the project references them.
+Click a section header to expand or collapse its tools.
 
-**Diagnostics → Open data folder** opens the settings and reports. Set `"audio_source_mode": "render"` in `config.json` to analyze the processed Resolve mix.
+1. **Voice.** Select a voice profile or create one under **Manage profiles**. Save samples in the active profile or set a temporary reference from the playhead. **Find voice** marks matches, including short speech windows. **Correct match** and **Wrong match** calibrate the profile threshold.
+2. **Pauses.** After finding matches, mark and review pauses before running **Tighten pauses**. Long pauses, uncertain speakers and cuts near voice-region boundaries are marked for manual review. Tightening creates a timeline backup by default and uses native Ripple Delete at clip boundaries.
+3. **Video playback.** In **Pauses**, choose the video track and select **Mark possible video pauses**. In supported file-backed clips, the scan marks still intervals of at least 1.2 seconds followed by motion. Use **Crop %** as `x,y,width,height` to scan only the video area in a recording with a webcam overlay. The paired markers are candidates for review.
+4. **YouTube Safety.** Scan the current timeline with local Whisper transcription. Select a flagged phrase to read its context. Uncertain transcriptions and clusters of repeated profanity are marked for manual review. **Edit risk rules** opens the local dictionary, which you can customize.
+5. **Auto Censor.** Choose **Beep**, **Smooth Mute** or **Timeline Mute** to create a processed timeline copy from eligible findings. Timeline Mute keeps separate tracks and adds fades when audio can be mapped to the source. Keep the generated WAV files while the project references them.
+
+**Settings → Diagnostics → Open data folder** opens the settings and reports. Set `"audio_source_mode": "render"` in `config.json` to analyze the processed Resolve mix.
+
+Open **About & updates** in the top-right corner of the panel. **Check for updates** compares your installed version with the latest stable GitHub release. The panel remembers the result and shows **Update available** in the header when it finds a newer version. **Open release** opens downloads and installation instructions. **Project links** contains shortcuts to GitHub and Telegram.
 
 ## Development and releases
 
@@ -43,4 +48,4 @@ GitHub Actions checks pull requests and pushes to `main`. For a new release, upd
 
 ## License
 
-[AGPLv3](LICENSE) · [DaVinci Resolve interoperability permission](LICENSE-RESOLVE-EXCEPTION.md)
+[AGPLv3](LICENSE) · [DaVinci Resolve interoperability permission](LICENSE-RESOLVE-EXCEPTION.md) · [Tabler Icons (MIT)](resolve_lua/icons/LICENSE)
