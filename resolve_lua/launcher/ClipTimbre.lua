@@ -234,10 +234,12 @@ local win = disp:AddWindow({
                 Weight = 0,
                 Spacing = 8,
                 ui:Button { ID = "ScanYouTube", Text = "Scan timeline", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
+                ui:Button { ID = "RebuildYouTubeMarkers", Text = "Rebuild markers", Enabled = false,
+                    ToolTip = "Place timeline markers from the saved scan.", Weight = 0 },
                 ui:HGap(0, 1),
                 ui:Label { ID = "YTCountHigh", Text = "HIGH 0", StyleSheet = "font-weight:600; color:#dc9db8;", ToolTip = "Pink timeline markers", Weight = 0 },
                 ui:Label { ID = "YTCountReview", Text = "REVIEW 0", StyleSheet = "font-weight:600; color:#8fc1c5;", ToolTip = "Cyan timeline markers", Weight = 0 },
-                ui:Label { ID = "YTCountPersonal", Text = "PERSONAL 0", StyleSheet = "font-weight:600; color:#d4ad82;", ToolTip = "Orange timeline markers", Weight = 0 },
+                ui:Label { ID = "YTCountPersonal", Text = "PERSONAL 0", StyleSheet = "font-weight:600; color:#d4ad82;", ToolTip = "Sand timeline markers", Weight = 0 },
                 ui:Label { Text = "MUTED", StyleSheet = "font-weight:600; color:#c497d4;", ToolTip = "Fuchsia timeline markers", Weight = 0 },
             },
 
@@ -659,6 +661,7 @@ local function update_snapshot(message)
         timeline_available = false
         for _, id in ipairs(timeline_controls) do itm[id].Enabled = false end
         itm.ScanYouTube.Enabled = active_scan ~= nil
+        itm.RebuildYouTubeMarkers.Enabled = false
         cached_events = {}
         risk_empty_message = "Could not read the current timeline."
         refresh_risk_tree()
@@ -684,6 +687,7 @@ local function update_snapshot(message)
         itm[id].Enabled = timeline_available
     end
     itm.ScanYouTube.Enabled = timeline_available or active_scan ~= nil
+    itm.RebuildYouTubeMarkers.Enabled = timeline_available and snap.youtube_valid and not active_scan
     itm.AutoCensor.Enabled = timeline_available and not active_scan
     if changed then
         itm.YTProgressBar.Text = "0%"
@@ -791,6 +795,7 @@ end
 local function set_scan_controls(running)
     itm.ScanYouTube.Text = running and "Cancel scan" or "Scan timeline"
     itm.ScanYouTube.StyleSheet = running and STYLE_DANGER_BUTTON or STYLE_ACCENT_BUTTON
+    if running then itm.RebuildYouTubeMarkers.Enabled = false end
     itm.AutoCensor.Enabled = timeline_available and not running
 end
 
@@ -851,6 +856,10 @@ local function finish_scan_ui(status)
     itm.YTProgressBar.Text = "100%"
     itm.YTProgressText.Text = string.format("Complete — %d HIGH, %d REVIEW", tonumber(status.high_count) or 0, tonumber(status.review_count) or 0)
     itm.FooterStatus.Text = "YouTube scan complete"
+    if status.added and status.event_count and status.added < status.event_count then
+        itm.FooterStatus.Text = string.format("%d of %d YouTube markers placed", status.added, status.event_count)
+        itm.FooterDot.StyleSheet = STYLE_WARN
+    end
 end
 
 local function start_youtube_scan()
@@ -988,6 +997,15 @@ function win.On.ClearVideoPauses.Clicked(ev) run_action("Clear video markers", s
 
 -- YouTube -------------------------------------------------------------------
 function win.On.ScanYouTube.Clicked(ev) if active_scan then cancel_youtube_scan() else start_youtube_scan() end end
+function win.On.RebuildYouTubeMarkers.Clicked(ev)
+    local placed, total
+    run_action("Rebuild YouTube markers", function()
+        placed, total = sv.rebuild_youtube_markers()
+    end, function()
+        itm.FooterStatus.Text = string.format("%d of %d YouTube markers placed", placed, total)
+        if placed < total then itm.FooterDot.StyleSheet = STYLE_WARN end
+    end)
+end
 function win.On.PrevYouTube.Clicked(ev) run_action("Previous YouTube risk", sv.previous_youtube_risk) end
 function win.On.NextYouTube.Clicked(ev) run_action("Next YouTube risk", sv.next_youtube_risk) end
 function win.On.ClearYouTube.Clicked(ev)
