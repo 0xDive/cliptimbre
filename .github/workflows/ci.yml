@@ -1,0 +1,92 @@
+name: CI and releases
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Check Python and test installation and removal
+        run: |
+          python -m compileall -q install.py backend
+          python -m unittest discover -s tests -v
+      - name: Check shell scripts
+        if: runner.os != 'Windows'
+        run: |
+          for script in install_macos.sh uninstall_macos.sh install_linux.sh uninstall_linux.sh; do
+            bash -n "$script"
+          done
+      - name: Check Lua
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends luajit
+          luajit -b resolve_lua/launcher/ClipTimbre.lua /dev/null
+          luajit -b resolve_lua/streamer_voice_common.lua /dev/null
+
+  release:
+    name: Publish tagged release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Confirm the tag matches VERSION
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ || "$GITHUB_REF_NAME" != "v$(cat VERSION)" ]]; then
+            echo "::error::Release tag must be vX.Y.Z and match VERSION"
+            exit 1
+          fi
+      - name: Publish release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists for $GITHUB_REF_NAME"
+            exit 0
+          fi
+          docs="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME"
+          previous=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude "$GITHUB_REF_NAME" HEAD 2>/dev/null || true)
+          range=HEAD
+          if [[ -n "$previous" ]]; then
+            range="$previous..HEAD"
+          fi
+          notes=$(mktemp)
+          {
+            printf '## What changed\n\n'
+            git log --no-merges --format='- %s (`%h`)' "$range"
+            if [[ -n "$previous" ]]; then
+              printf '\n[Full diff](%s/%s/compare/%s...%s)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$previous" "$GITHUB_REF_NAME"
+            fi
+            printf '\n## Installation\n\n'
+            printf '%s\n\n' 'Download and extract **Source code (zip)** below, then follow the installation and uninstall instructions for macOS, Windows or Linux.'
+            printf '[English guide](%s/README.md) · [Инструкция на русском](%s/README.ru.md)\n' "$docs" "$docs"
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "ClipTimbre $GITHUB_REF_NAME" --notes-file "$notes"

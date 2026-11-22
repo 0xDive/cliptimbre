@@ -35,9 +35,11 @@ On Linux, use `zenity` for dialogs. Ripple Delete inside clips requires X11 and 
 
 **Diagnostics → Open data folder** opens the settings and reports. Set `"audio_source_mode": "render"` in `config.json` to analyze the processed Resolve mix.
 
-## Development
+## Development and releases
 
 `backend/` contains audio processing, `resolve_lua/` contains the panel and timeline integration, and `install.py` manages installation. Run `python -m unittest discover -s tests` for installer tests.
+
+GitHub Actions checks pull requests and pushes to `main`. For a new release, update `VERSION`, commit the change, then tag and push the matching version as `vX.Y.Z`. After the checks pass, GitHub publishes the release with notes generated from the commit history and links to the source downloads.
 
 ## License
 
