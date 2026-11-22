@@ -1,3 +1,5 @@
+-- GNU AGPL version 3 only. See LICENSE and LICENSE-RESOLVE-EXCEPTION.md.
+
 local M = {}
 
 local PATH_SEP = package.config:sub(1, 1)

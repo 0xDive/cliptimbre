@@ -44,3 +44,9 @@ Set `"audio_source_mode": "render"` in `~/.streamer_voice/config.json` if analys
 Run `python -m compileall -q backend install.py` to check Python syntax. Run `luajit -b resolve_lua/launcher/ClipTimbre.lua /dev/null` and `luajit -b resolve_lua/streamer_voice_common.lua /dev/null` to check the Lua sources.
 
 Before release, verify menu startup, settings, a single-clip and a cut timeline, pause markers, and all three censor modes in a disposable Resolve project. Make sure a report attached to an issue contains no private transcript or local media path.
+
+## License
+
+Copyright © 2026 ClipTimbre contributors. ClipTimbre is licensed under the [GNU Affero General Public License, version 3 only](LICENSE), with a [DaVinci Resolve interoperability permission](LICENSE-RESOLVE-EXCEPTION.md).
+
+If you distribute a modified version, provide its corresponding source under AGPLv3. If users interact with your modified version remotely over a network, offer that source to those users as well.

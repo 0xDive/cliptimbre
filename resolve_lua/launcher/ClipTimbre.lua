@@ -1,4 +1,5 @@
 -- ClipTimbre 0.16.0 launcher for DaVinci Resolve.
+-- GNU AGPL version 3 only. See LICENSE and LICENSE-RESOLVE-EXCEPTION.md.
 
 local PATH_SEP = package.config:sub(1, 1)
 local IS_WINDOWS = PATH_SEP == "\\"
