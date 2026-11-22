@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -61,6 +62,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(launcher.read_bytes(), install.SOURCE_LAUNCHER.read_bytes())
         self.assertEqual((self.data / "VERSION").read_text().strip(), install.VERSION)
         self.assertTrue((self.data / "backend/profile.py").is_file())
+        for name in ("chevron-right.png", "chevron-down.png", "LICENSE"):
+            self.assertEqual(
+                (self.data / "resolve/icons" / name).read_bytes(),
+                (install.ROOT / "resolve_lua/icons" / name).read_bytes(),
+            )
         self.run_wrapper("uninstall", "--scripts-dir", str(self.scripts))
 
         self.assertFalse(launcher.exists())
@@ -74,3 +80,17 @@ class InstallerTests(unittest.TestCase):
         unrelated.write_bytes(b"-- An unrelated script\n")
         self.run_wrapper("uninstall", "--scripts-dir", str(self.scripts))
         self.assertEqual(unrelated.read_bytes(), b"-- An unrelated script\n")
+
+    def test_upgrade_refreshes_stock_rules_and_backs_them_up(self):
+        self.data.mkdir(parents=True)
+        rules = self.data / "ad_safety_terms.json"
+        previous = b'{"version": 1, "rules": ["previous stock rules"]}\n'
+        rules.write_bytes(previous)
+        with patch.object(install, "DATA", self.data), patch.object(install, "runtime"), patch.object(
+            install, "OLD_STARTER_RULES_SHA256", hashlib.sha256(previous).hexdigest(),
+        ):
+            install.install(self.utility, None)
+
+        self.assertEqual(rules.read_bytes(), (install.ROOT / "ad_safety_terms.default.json").read_bytes())
+        [backup] = (self.data / "backups").glob("*/ad_safety_terms.json")
+        self.assertEqual(backup.read_bytes(), previous)

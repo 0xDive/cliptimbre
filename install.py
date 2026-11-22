@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -20,6 +21,7 @@ VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
 DATA = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice").resolve()
 SOURCE_LAUNCHER = ROOT / "resolve_lua" / "launcher" / "ClipTimbre.lua"
 LAUNCHER_HEADER = b"-- ClipTimbre "
+OLD_STARTER_RULES_SHA256 = "226d4abd6017af7d5713580ae3428496085f1530e2848cab41c484cb75aa45f5"
 
 
 def utility_directory() -> Path:
@@ -115,12 +117,16 @@ def install(utility: Path, pytorch_index: str | None) -> None:
     if launcher.is_file() and not launcher.read_bytes().startswith(LAUNCHER_HEADER):
         raise RuntimeError(f"A different Resolve script is already using {launcher}")
 
-    for directory in ("tmp", "cache", "profiles/Streamer/refs", "backend", "resolve"):
+    for directory in ("tmp", "cache", "profiles/Streamer/refs", "backend", "resolve/icons"):
         (DATA / directory).mkdir(parents=True, exist_ok=True)
     runtime(pytorch_index)
 
     files = {
         **{DATA / "backend" / p.name: p for p in (ROOT / "backend").glob("*.py")},
+        **{
+            DATA / "resolve/icons" / name: ROOT / "resolve_lua/icons" / name
+            for name in ("chevron-right.png", "chevron-down.png", "LICENSE")
+        },
         DATA / "resolve/streamer_voice_common.lua": ROOT / "resolve_lua/streamer_voice_common.lua",
         DATA / "VERSION": ROOT / "VERSION",
         launcher: SOURCE_LAUNCHER,
@@ -128,6 +134,13 @@ def install(utility: Path, pytorch_index: str | None) -> None:
     installed_files = list(legacy_launchers) + [
         path for path, source in files.items() if path.is_file() and path.read_bytes() != source.read_bytes()
     ]
+    rules = DATA / "ad_safety_terms.json"
+    # Replace the previous stock rules during an upgrade, preserving customized dictionaries.
+    upgrade_rules = rules.is_file() and hashlib.sha256(
+        rules.read_bytes().replace(b"\r\n", b"\n")
+    ).hexdigest() == OLD_STARTER_RULES_SHA256
+    if upgrade_rules:
+        installed_files.append(rules)
     if installed_files:
         backup = DATA / "backups" / datetime.now().strftime("cliptimbre-before-%Y%m%d-%H%M%S-%f")
         for path in installed_files:
@@ -141,7 +154,7 @@ def install(utility: Path, pytorch_index: str | None) -> None:
         "config.json": "config.example.json",
         "ad_safety_terms.json": "ad_safety_terms.default.json",
     }.items():
-        if not (DATA / filename).exists():
+        if not (DATA / filename).exists() or (filename == rules.name and upgrade_rules):
             publish(ROOT / source, DATA / filename)
     try:
         with (DATA / "active_profile.txt").open("x", encoding="utf-8") as active:

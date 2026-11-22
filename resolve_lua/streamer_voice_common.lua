@@ -13,10 +13,15 @@ local CONFIG_PATH = APP_DIR .. "/config.json"
 local LOG_PATH = APP_DIR .. "/streamer_voice.log"
 local BACKEND_PATH = APP_DIR .. "/backend/analyze.py"
 local PAUSE_BACKEND_PATH = APP_DIR .. "/backend/pauses.py"
+local VIDEO_PAUSE_BACKEND_PATH = APP_DIR .. "/backend/video_pauses.py"
 local PROFILE_BACKEND_PATH = APP_DIR .. "/backend/profile.py"
 local AD_SAFETY_BACKEND_PATH = APP_DIR .. "/backend/ad_safety.py"
 local CENSOR_BACKEND_PATH = APP_DIR .. "/backend/censor.py"
 local TIMELINE_FADES_BACKEND_PATH = APP_DIR .. "/backend/timeline_fades.py"
+local UPDATE_BACKEND_PATH = APP_DIR .. "/backend/check_updates.py"
+local UPDATE_CACHE_PATH = APP_DIR .. "/updates.txt"
+local GITHUB_URL = "https://github.com/0xDive/cliptimbre"
+local TELEGRAM_URL = "https://t.me/dev_dive"
 local AD_SAFETY_TERMS_PATH = APP_DIR .. "/ad_safety_terms.json"
 local ACTIVE_PROFILE_PATH = APP_DIR .. "/active_profile.txt"
 local LATEST_RESULT_PATH = APP_DIR .. "/latest_result.json"
@@ -35,6 +40,7 @@ local MARKER_CUSTOM = "streamer_voice_match_v1"
 local REF_CUSTOM = "streamer_voice_reference_v1"
 local PAUSE_CUSTOM = "streamer_voice_pause_v1"
 local PAUSE_REVIEW_CUSTOM = "streamer_voice_pause_review_v1"
+local VIDEO_HOLD_CUSTOM = "cliptimbre_video_hold_v1"
 local YT_REVIEW_CUSTOM = "streamer_voice_youtube_review_v1"
 local YT_HIGH_CUSTOM = "streamer_voice_youtube_high_v1"
 local YT_MUTED_CUSTOM = "streamer_voice_youtube_muted_v1"
@@ -437,6 +443,8 @@ local function delete_markers(timeline, kind)
             should = (custom == REF_CUSTOM) or (name:sub(1, #MARKER_PREFIX + 10) == MARKER_PREFIX .. " REFERENCE")
         elseif kind == "pauses" then
             should = (custom == PAUSE_CUSTOM) or (custom == PAUSE_REVIEW_CUSTOM) or (name:sub(1, #MARKER_PREFIX + 6) == MARKER_PREFIX .. " PAUSE") or (name:sub(1, #MARKER_PREFIX + 11) == MARKER_PREFIX .. " LONG PAUSE")
+        elseif kind == "video_holds" then
+            should = custom == VIDEO_HOLD_CUSTOM
         elseif kind == "youtube" then
             should = (custom == YT_REVIEW_CUSTOM) or (custom == YT_HIGH_CUSTOM) or (name:sub(1, 4) == "[YT]")
         elseif kind == "all" then
@@ -945,6 +953,7 @@ local function run_backend(source, state, cfg, out_json, out_tsv, analysis_id)
     end
     if source.mode == "render" then table.insert(args, "--rendered") end
     local rest = {
+        "--data-dir", APP_DIR,
         "--reference-start", tostring(state.reference_seconds),
         "--reference-duration", tostring(state.reference_duration_seconds),
         "--threshold", tostring(cfg.threshold),
@@ -1225,6 +1234,7 @@ local function parse_pause_tsv(path, plan_id)
                     delete_duration = tonumber(fields[7]),
                     action = tostring(fields[8]),
                     streamer_segment = tonumber(fields[9]),
+                    reason = tostring(fields[10] or ""),
                 })
             end
         end
@@ -1269,6 +1279,12 @@ local function read_kv_file(path)
     return out
 end
 
+local pause_review_reason = {
+    long = "Long pause",
+    near_boundary = "Near a voice-region boundary",
+    unconfirmed_voice = "Voice could not be confirmed on both sides",
+}
+
 local function add_pause_markers(timeline, fps, pauses, plan_id)
     delete_markers(timeline, "pauses")
     local count = 0
@@ -1283,11 +1299,12 @@ local function add_pause_markers(timeline, fps, pauses, plan_id)
         if is_auto then
             name = string.format("%s PAUSE %.2fs -> %.2fs", MARKER_PREFIX, p.duration or 0, p.target or 0)
         else
-            name = string.format("%s LONG PAUSE %.2fs CHECK", MARKER_PREFIX, p.duration or 0)
+            name = string.format("%s PAUSE %.2fs CHECK", MARKER_PREFIX, p.duration or 0)
         end
         local note = string.format(
-            "Streamer pause #%d\nmode: %s\noriginal: %.3fs\ntarget: %.3fs\ndelete: %.3fs\nstreamer block: %d\nplan: %s",
-            i, tostring(p.action), p.duration or 0, p.target or 0, p.delete_duration or 0, p.streamer_segment or 0, plan_id
+            "Speech pause #%d\nmode: %s\noriginal: %.3fs\ntarget: %.3fs\nproposed cut: %.3fs\nreview: %s\nplan: %s",
+            i, tostring(p.action), p.duration or 0, p.target or 0, p.delete_duration or 0,
+            pause_review_reason[p.reason] or "—", plan_id
         )
         if timeline:AddMarker(start_frame, color, name, note, duration_frames, custom) then count = count + 1 end
     end
@@ -1349,6 +1366,122 @@ function M.clear_pause_markers()
     local _, _, timeline = get_context()
     local count = delete_markers(timeline, "pauses")
     notify("Removed " .. tostring(count) .. " ClipTimbre pause markers")
+end
+
+local function write_video_pause_manifest(timeline, fps, track, path)
+    if optional_call(function() return timeline:GetIsTrackEnabled("video", track) end) == false then
+        fail("Enable the selected video track before scanning")
+    end
+    local offset = timeline:GetStartFrame()
+    local clips, skipped = {}, 0
+    for _, item in ipairs(timeline:GetItemListInTrack("video", track) or {}) do
+        if optional_call(function() return item:GetClipEnabled() end) ~= false then
+            local media = optional_call(function() return item:GetMediaPoolItem() end)
+            local file = media and optional_call(function() return media:GetClipProperty("File Path") end)
+            if type(file) == "table" then file = file["File Path"] end
+            local raw_fps = media and optional_call(function() return media:GetClipProperty("FPS") end)
+            if type(raw_fps) == "table" then raw_fps = raw_fps.FPS end
+            local source_fps = normalized_fps(raw_fps)
+            local first = safe_number_call(function() return item:GetSourceStartFrame() end)
+            local last = safe_number_call(function() return item:GetSourceEndFrame() end)
+            local left = safe_number_call(function() return item:GetLeftOffset(true) end) or
+                safe_number_call(function() return item:GetLeftOffset() end)
+            local duration = item:GetDuration() / fps
+            local speed = optional_call(function() return item:GetProperty("Speed") end)
+            if type(speed) == "table" then speed = speed.Speed or speed.speed end
+            speed = tonumber(speed)
+            local retimed = speed and math.abs(speed - 100) > 0.01 and math.abs(speed - 1) > 0.001
+            local aligned = source_fps and first and last and left and
+                first >= 0 and math.abs((last - first) / source_fps - duration) <= 2 / math.min(source_fps, fps) and
+                math.abs(first / source_fps - left / fps) <= 2 / math.min(source_fps, fps)
+            if not retimed and aligned and type(file) == "string" and file_exists(file) and duration > 1.8 then
+                clips[#clips + 1] = string.format(
+                    '{"path":"%s","timeline_start":%.9f,"source_offset":%.9f,"duration":%.9f}',
+                    json_escape(file), (item:GetStart() - offset) / fps, first / source_fps, duration
+                )
+            else
+                skipped = skipped + 1
+            end
+        end
+    end
+    if #clips == 0 then fail("No supported video clips to scan on V" .. track) end
+    write_all(path, '{"clips":[' .. table.concat(clips, ",") .. "]}\n")
+    return #clips, skipped
+end
+
+local function write_video_pause_markers(timeline, fps, output)
+    delete_markers(timeline, "video_holds")
+    local occupied = {}
+    for frame in pairs(timeline:GetMarkers() or {}) do occupied[tonumber(frame)] = true end
+    local count, collisions = 0, 0
+    local limit = timeline:GetEndFrame() - timeline:GetStartFrame()
+    for line in output:gmatch("[^\r\n]+") do
+        local start, finish = line:match("^([%d%.]+)\t([%d%.]+)$")
+        if start then
+            local a = math.floor(tonumber(start) * fps + 0.5)
+            local b = math.floor(tonumber(finish) * fps + 0.5)
+            if a >= 0 and b > a and b < limit then
+                if occupied[a] or occupied[b] then
+                    collisions = collisions + 1
+                elseif timeline:AddMarker(a, "Mint", "[CT] Possible video pause", "Review the still image and surrounding playback.", b - a, VIDEO_HOLD_CUSTOM) then
+                    if timeline:AddMarker(b, "Mint", "[CT] Possible video resume", "Motion returned in the scanned area.", 1, VIDEO_HOLD_CUSTOM) then
+                        occupied[a], occupied[b] = true, true
+                        count = count + 1
+                    else
+                        timeline:DeleteMarkerAtFrame(a)
+                    end
+                end
+            end
+        end
+    end
+    return count, collisions
+end
+
+function M.mark_video_pauses(track, crop)
+    local _, _, timeline = get_context()
+    local fps = get_fps(timeline)
+    track = tonumber(track) or 1
+    if track % 1 ~= 0 or track < 1 or track > timeline:GetTrackCount("video") then
+        fail("Select an existing video track")
+    end
+    crop = tostring(crop or "0,0,100,100"):gsub("%s+", "")
+    local x, y, width, height = crop:match("^(%d+),(%d+),(%d+),(%d+)$")
+    if not height or tonumber(width) < 10 or tonumber(height) < 10 or
+        tonumber(x) + tonumber(width) > 100 or tonumber(y) + tonumber(height) > 100 then
+        fail("Use x,y,width,height percentages for a crop inside the frame")
+    end
+    if not file_exists(VIDEO_PAUSE_BACKEND_PATH) or not file_exists(VENV_PYTHON) then
+        fail("Video scan backend missing. Re-run the ClipTimbre installer")
+    end
+    local layout = timeline_layout(timeline, {"video"})
+    mkdir_p(APP_DIR .. "/tmp")
+    local run_dir = APP_DIR .. "/tmp/video_hold_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+    mkdir_p(run_dir)
+    local ok, err = pcall(function()
+        local manifest = run_dir .. "/video.json"
+        local out = run_dir .. "/holds.tsv"
+        local mapped, skipped = write_video_pause_manifest(timeline, fps, track, manifest)
+        local args = {VENV_PYTHON, VIDEO_PAUSE_BACKEND_PATH, "--manifest", manifest, "--crop", crop, "--output", out}
+        for i, arg in ipairs(args) do args[i] = shell_quote(arg) end
+        local cmd = table.concat(args, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
+        local a, b, c = os.execute(cmd)
+        if not command_ok(a, b, c) then fail("Video scan failed. See " .. LOG_PATH) end
+        if layout ~= timeline_layout(timeline, {"video"}) then fail("The video timeline changed during the scan") end
+        local output = read_all(out) or ""
+        local scanned = tonumber(output:match("^# scanned\t(%d+)"))
+        if not scanned then fail("Video scan returned no report") end
+        local count, collisions = write_video_pause_markers(timeline, fps, output)
+        notify(string.format("Video holds: %d pairs marked. %d clips skipped, %d marker collisions.",
+            count, skipped + mapped - scanned, collisions))
+    end)
+    remove_tree(run_dir)
+    if not ok then error(err) end
+end
+
+function M.clear_video_pauses()
+    local _, _, timeline = get_context()
+    local count = delete_markers(timeline, "video_holds")
+    notify("Removed " .. tostring(count) .. " video hold markers")
 end
 
 local function pause_marker_frames(timeline)
@@ -1447,6 +1580,7 @@ local function parse_ad_safety_tsv(path)
                     phrase = tostring(fields[6]),
                     context = tostring(fields[7]),
                     confidence = tonumber(fields[8]) or 0,
+                    auto_censor = not tostring(fields[9] or ""):match("^%s*0%s*$"),
                 })
             end
         end
@@ -1541,8 +1675,10 @@ local function add_ad_safety_markers(timeline, fps, events, cfg)
         local category = tostring(e.category or "risk")
         local name = string.format("%s %s", prefix, category)
         local note = string.format(
-            "YouTube ad-safety audio flag #%d\nseverity: %s\ncategory: %s\nlabel: %s\nmatch: %s\nconfidence: %.3f\ncontext: %s\n\nConservative audio-only flag; review context, visuals and metadata before upload.",
-            i, tostring(e.severity), category, tostring(e.label or ""), tostring(e.phrase or ""), tonumber(e.confidence) or 0, tostring(e.context or "")
+            "YouTube audio flag #%d\nseverity: %s\ncategory: %s\nlabel: %s\nmatch: %s\nconfidence: %.3f\ncontext: %s\n%s",
+            i, tostring(e.severity), category, tostring(e.label or ""), tostring(e.phrase or ""),
+            tonumber(e.confidence) or 0, tostring(e.context or ""),
+            (e.auto_censor == false or category == "frequent_profanity") and "Manual review only" or "Eligible for Auto Censor"
         )
         if timeline:AddMarker(start_frame, color, name, note, end_frame - start_frame, custom) then
             added = added + 1
@@ -1608,10 +1744,15 @@ local function join_csv(values)
     return table.concat(values or {}, ",")
 end
 
+local function censor_event_selected(event, category_set, severity_set)
+    return event.auto_censor ~= false and event.category ~= "frequent_profanity" and
+        category_set[event.category] and severity_set[event.severity]
+end
+
 local function selected_censor_event_count(events, category_set, severity_set)
     local count = 0
     for _, e in ipairs(events or {}) do
-        if tostring(e.category) ~= "frequent_profanity" and category_set[tostring(e.category)] and severity_set[tostring(e.severity)] then
+        if censor_event_selected(e, category_set, severity_set) then
             count = count + 1
         end
     end
@@ -1623,7 +1764,7 @@ local function selected_censor_intervals(events, category_set, severity_set, cfg
     local after = math.max(0, tonumber(cfg.youtube_censor_pad_after_seconds) or 0.12)
     local raw = {}
     for _, e in ipairs(events or {}) do
-        if tostring(e.category) ~= "frequent_profanity" and category_set[tostring(e.category)] and severity_set[tostring(e.severity)] then
+        if censor_event_selected(e, category_set, severity_set) then
             local s = math.max(0, (tonumber(e.start) or 0) - before)
             local f = math.max(s, (tonumber(e.finish) or tonumber(e.start) or 0) + after)
             table.insert(raw, {start=s, finish=f})
@@ -2296,7 +2437,7 @@ function M.auto_censor_youtube(opts)
 
     local events = parse_ad_safety_tsv(LATEST_AD_SAFETY_PATH)
     local count = selected_censor_event_count(events, category_set, severity_set)
-    if count == 0 then fail("No scanned YouTube risks match the current Auto Censor selection") end
+    if count == 0 then fail("No eligible risks match the current Auto Censor selection") end
     local mode = tostring(opts.mode or "beep")
     if mode ~= "mute" and mode ~= "timeline_mute" then mode = "beep" end
     local intervals = selected_censor_intervals(events, category_set, severity_set, cfg)
@@ -2740,6 +2881,7 @@ function M.tighten_streamer_pauses()
     delete_markers(timeline, "pauses")
     delete_markers(timeline, "reference")
     delete_markers(timeline, "youtube")
+    delete_markers(timeline, "video_holds")
     os.remove(STATE_PATH)
     os.remove(PAUSE_STATE_PATH)
     os.remove(ANALYSIS_STATE_PATH)
@@ -2753,7 +2895,7 @@ function M.tighten_streamer_pauses()
         fail("Tighten stopped after " .. tostring(completed) .. " verified edits. Safety backup: " .. tostring(backup_name) .. ". See log.")
     end
     notify(string.format(
-        "Tightened %d pauses; removed about %.1fs. Backup: %s. Streamer/reference/YouTube markers were cleared because timeline timing changed.",
+        "Tightened %d pauses; removed about %.1fs. Backup: %s. Analysis markers were cleared because timeline timing changed.",
         completed, total_delete, tostring(backup_name)
     ))
 end
@@ -3174,6 +3316,52 @@ function M.open_ad_safety_terms()
     end
 end
 
+local function open_url(url)
+    if IS_WINDOWS then
+        os.execute('start "" ' .. shell_quote(url))
+    else
+        local opener = IS_LINUX and "xdg-open" or "open"
+        os.execute(opener .. " " .. shell_quote(url) .. " >/dev/null 2>&1 &")
+    end
+end
+
+function M.open_github()
+    open_url(GITHUB_URL)
+end
+
+function M.open_telegram()
+    open_url(TELEGRAM_URL)
+end
+
+local version_pattern = "^(%d+)%.(%d+)%.(%d+)$"
+
+function M.open_release(version)
+    if version and version:match(version_pattern) then
+        open_url(GITHUB_URL .. "/releases/tag/v" .. version)
+    end
+end
+
+function M.get_update_info(installed_version)
+    local cache = read_kv_file(UPDATE_CACHE_PATH)
+    if not cache or not cache.latest or not cache.latest:match(version_pattern) then return nil end
+    local checked_at = tonumber(cache.checked_at)
+    if not checked_at or checked_at < 1 or checked_at > os.time() then return nil end
+    local relation
+    if installed_version then
+        local installed_parts = {installed_version:match(version_pattern)}
+        local latest_parts = {cache.latest:match(version_pattern)}
+        relation = 0
+        for i = 1, 3 do
+            local installed, latest = tonumber(installed_parts[i]), tonumber(latest_parts[i])
+            if installed ~= latest then
+                relation = installed < latest and -1 or 1
+                break
+            end
+        end
+    end
+    return { latest = cache.latest, checked_at = checked_at, relation = relation }
+end
+
 local function build_ad_safety_args(source, cfg, out_tsv, out_json, status_path)
     local args = { VENV_PYTHON, AD_SAFETY_BACKEND_PATH }
     if source.kind == "manifest" then table.insert(args, "--manifest") else table.insert(args, "--audio") end
@@ -3228,6 +3416,25 @@ local function launch_background_args(args, runner_path, exit_path)
         os.execute("chmod +x " .. shell_quote(runner_path))
         os.execute("/bin/sh " .. shell_quote(runner_path) .. " >/dev/null 2>&1 &")
     end
+end
+
+function M.start_update_check()
+    if not file_exists(VENV_PYTHON) or not file_exists(UPDATE_BACKEND_PATH) then
+        return nil, "Update checker missing. Re-run the ClipTimbre installer."
+    end
+    local run_dir = APP_DIR .. "/tmp/update_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+    mkdir_p(run_dir)
+    local exit_path = run_dir .. "/exit_code.txt"
+    local runner_path = run_dir .. (IS_WINDOWS and "/check.ps1" or "/check.sh")
+    launch_background_args({VENV_PYTHON, UPDATE_BACKEND_PATH, "--cache", UPDATE_CACHE_PATH}, runner_path, exit_path)
+    return { run_dir = run_dir, exit_path = exit_path, started_at = os.time() }
+end
+
+function M.poll_update_check(job)
+    local code = tonumber(read_all(job.exit_path))
+    if code == nil and os.time() - job.started_at < 30 then return nil end
+    remove_tree(job.run_dir)
+    return code == 0
 end
 
 local function parse_progress_status(path)

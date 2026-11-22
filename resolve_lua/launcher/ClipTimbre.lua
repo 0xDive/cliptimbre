@@ -7,12 +7,12 @@ local home = IS_WINDOWS and (os.getenv("USERPROFILE") or os.getenv("HOME") or ""
 local data_dir = os.getenv("STREAMER_VOICE_DATA_DIR") or home .. "/.streamer_voice"
 local common_path = data_dir .. "/resolve/streamer_voice_common.lua"
 local version_file = io.open(data_dir .. "/VERSION", "rb")
-local version_label = "Version unavailable"
+local installed_version
 if version_file then
-    local version = (version_file:read("*l") or ""):match("^%s*(%d+%.%d+%.%d+)%s*$")
-    if version then version_label = "v" .. version end
+    installed_version = (version_file:read("*l") or ""):match("^%s*(%d+%.%d+%.%d+)%s*$")
     version_file:close()
 end
+local version_label = installed_version and ("v" .. installed_version) or "Version unavailable"
 
 local function file_exists(path)
     local f = io.open(path, "rb")
@@ -38,209 +38,164 @@ local ui = fu.UIManager
 local disp = bmd.UIDispatcher(ui)
 
 local ROOT_STYLE = [[
-QWidget { background-color:#17191c; color:#e9edf2; font-size:12px; }
+QWidget { background-color:#1b1d20; color:#e7e9ed; font-size:12px; }
 QLabel { background-color:transparent; }
-QPushButton { background-color:#25292f; border:1px solid #363b43; border-radius:5px; padding:7px 12px; color:#e9edf2; }
-QPushButton:hover { background-color:#30353d; border-color:#4c535e; }
-QPushButton:pressed { background-color:#1f2227; }
-QPushButton:disabled { color:#6f7782; background-color:#202328; }
-QLineEdit, QComboBox, QTextEdit { background-color:#202328; border:1px solid #363b43; border-radius:4px; padding:5px 7px; color:#e9edf2; selection-background-color:#3977b8; }
-QTreeWidget { background-color:#1c1f23; alternate-background-color:#20242a; border:1px solid #363b43; color:#e9edf2; outline:0; }
-QHeaderView::section { background-color:#25292f; color:#b8c0ca; border:0; border-right:1px solid #363b43; padding:6px; }
+QGroupBox { background-color:transparent; }
+QPushButton { background-color:#292c31; border:1px solid #41464e; border-radius:4px; padding:6px 10px; color:#e7e9ed; }
+QPushButton:hover { background-color:#33373e; border-color:#58616d; }
+QPushButton:pressed { background-color:#25282e; }
+QPushButton:disabled { color:#9298a2; background-color:#24272c; border-color:#343941; }
+QLineEdit, QComboBox, QSpinBox, QTextEdit { background-color:#22252a; border:1px solid #41464e; border-radius:4px; padding:4px 7px; color:#e7e9ed; selection-background-color:#3a526a; }
+QTreeWidget { background-color:#1f2227; alternate-background-color:#25282e; border:1px solid #393e46; color:#e7e9ed; }
+QTreeWidget::item:selected { background-color:#354d64; color:#ffffff; }
+QHeaderView::section { background-color:#2b2e34; color:#ced3da; border:0; border-right:1px solid #41464e; padding:5px; }
 QCheckBox { spacing:6px; }
+QPushButton:focus, QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTreeWidget:focus, QTextEdit:focus { border-color:#91b3d5; }
 ]]
 
-local STYLE_TITLE = "font-size:21px; font-weight:600; color:#f1f4f7;"
-local STYLE_PAGE_TITLE = "font-size:18px; font-weight:600; color:#f1f4f7;"
-local STYLE_SECTION = "font-size:14px; font-weight:600; color:#e9edf2; padding-top:2px;"
-local STYLE_MUTED = "font-size:12px; color:#9ca6b2;"
-local STYLE_MICRO = "font-size:11px; color:#8f99a5;"
-local STYLE_VALUE = "font-size:14px; font-weight:600; color:#e9edf2; background-color:#202328; border:1px solid #363b43; border-radius:6px; padding:8px 10px;"
-local STYLE_ACCENT_BUTTON = "QPushButton { background-color:#147fc4; border:1px solid #2497da; border-radius:5px; padding:8px 13px; font-weight:600; color:white; } QPushButton:hover { background-color:#198ed7; } QPushButton:disabled { background-color:#22272d; border-color:#363b43; color:#788390; }"
-local STYLE_DANGER_BUTTON = "QPushButton { background-color:#42272a; border:1px solid #734047; border-radius:5px; padding:7px 11px; color:#f0c3c7; } QPushButton:hover { background-color:#533036; } QPushButton:disabled { background-color:#22272d; border-color:#363b43; color:#788390; }"
-local STYLE_NAV = "QPushButton { padding:7px 11px; border:0; border-bottom:2px solid transparent; border-radius:0; background-color:transparent; color:#aeb7c2; } QPushButton:hover { background-color:#202328; color:#ffffff; }"
-local STYLE_NAV_ACTIVE = "QPushButton { padding:7px 11px; border:0; border-bottom:2px solid #4aa6e8; border-radius:0; background-color:#202328; color:#ffffff; font-weight:600; }"
-local STYLE_SUCCESS = "font-size:13px; font-weight:600; color:#65c466;"
-local STYLE_WARN = "font-size:13px; font-weight:600; color:#e6b94c;"
-local STYLE_ERROR = "font-size:13px; font-weight:600; color:#e06464;"
+local STYLE_TITLE = "font-size:18px; font-weight:700; color:#f1f3f5;"
+local STYLE_PAGE_TITLE = "font-size:21px; font-weight:600; color:#f1f3f5;"
+local STYLE_SECTION = "font-size:14px; font-weight:600; color:#e7e9ed;"
+local STYLE_MUTED = "font-size:12px; color:#b9c0ca;"
+local STYLE_MICRO = "font-size:11px; color:#b0b8c2;"
+local STYLE_ACCENT_BUTTON = "QPushButton { background-color:#91b3d5; border-color:#91b3d5; color:#14202b; font-weight:600; } QPushButton:hover { background-color:#a6c4e1; border-color:#a6c4e1; } QPushButton:focus { border-color:#e4f2ff; } QPushButton:disabled { background-color:#24272c; border-color:#343941; color:#9298a2; }"
+local STYLE_DANGER_BUTTON = "QPushButton { border-color:#75494d; color:#efb6ba; } QPushButton:hover { background-color:#412c32; border-color:#a66a70; } QPushButton:disabled { border-color:#343941; color:#9298a2; }"
+local STYLE_ACTIVE_BUTTON = "QPushButton { border-color:#7799bc; color:#d5e8fb; }"
+local icon_dir = data_dir:gsub("\\", "/"):gsub('"', '\\"') .. "/resolve/icons"
+local STYLE_TOOL_HEADER = ([[
+QPushButton {
+    text-align:left; font-size:14px; font-weight:600; padding:8px 12px;
+    background-color:#26292e; border-color:#3a4048;
+    background-image:url("%s/chevron-right.png");
+    background-repeat:no-repeat; background-position:right center; background-origin:content;
+}
+QPushButton:hover { background-color:#30343b; border-color:#535d68; }
+QPushButton:checked {
+    background-color:#2d333a; border-color:#47525e;
+    background-image:url("%s/chevron-down.png");
+}
+QPushButton:focus { border-color:#91b3d5; }
+]]):format(icon_dir, icon_dir)
+local STYLE_SUCCESS = "font-size:12px; font-weight:600; color:#9ed3ac;"
+local STYLE_WARN = "font-size:12px; font-weight:600; color:#efc17d;"
+local STYLE_ERROR = "font-size:12px; font-weight:600; color:#f09ca0;"
+local STYLE_PROGRESS = "font-weight:600; color:#91b3d5;"
 
 local function separator(id)
     return ui:Label {
-        ID = id,
-        Text = "",
-        MinimumSize = { 1, 1 },
-        MaximumSize = { 16777215, 1 },
-        StyleSheet = "background-color:#2b2f35;",
-        Weight = 0,
+        ID = id, Text = "", Weight = 0,
+        MinimumSize = {1, 1}, MaximumSize = {16777215, 1},
+        StyleSheet = "background-color:#363b43;",
+    }
+end
+
+local TOOL_SECTIONS = {"Voice", "Pauses", "YouTube"}
+local TOOL_TITLES = {Voice = "Voice", Pauses = "Pauses", YouTube = "YouTube Safety"}
+local TOOL_PAGES = {
+    {id = "VoicePage", section = "Voice"},
+    {id = "PausesPage", section = "Pauses"},
+    {id = "YouTubePage", section = "YouTube"},
+    {id = "CollapsedPage"},
+}
+
+local function header_id(page, section)
+    return page.id .. section
+end
+
+local function tool_page(page, body)
+    -- Separate layouts let Fusion collapse a section without reserving its height.
+    local contents = {ID = page.id, Spacing = 7}
+    for _, section in ipairs(TOOL_SECTIONS) do
+        local expanded = section == page.section
+        table.insert(contents, ui:Button {
+            ID = header_id(page, section), Text = TOOL_TITLES[section],
+            Checkable = true, Checked = expanded, StyleSheet = STYLE_TOOL_HEADER, Weight = 0,
+        })
+        if expanded then
+            table.insert(contents, ui:HGroup {
+                Weight = section == "YouTube" and 1 or 0, Spacing = 0,
+                ui:HGap(12, 0), body, ui:HGap(12, 0),
+            })
+        end
+    end
+    if page.section ~= "YouTube" then table.insert(contents, ui:VGap(0, 1)) end
+    return ui:VGroup(contents)
+end
+
+local function field(label, input)
+    return ui:VGroup {
+        Weight = 1, Spacing = 3,
+        ui:Label { Text = label, StyleSheet = STYLE_MICRO, Weight = 0 },
+        input,
     }
 end
 
 local win = disp:AddWindow({
     ID = "ClipTimbreWindow",
     WindowTitle = "ClipTimbre",
-    Geometry = {120, 72, 842, 780},
+    Geometry = {120, 72, 820, 650},
     Spacing = 0,
     StyleSheet = ROOT_STYLE,
 }, ui:VGroup {
     ID = "DialogContent",
     -- The Resolve window provides its own inset. Group margins can offset
     -- child controls without reducing their allocation in Fusion UIManager.
-    Spacing = 6,
-
-    ui:VGroup {
-        ID = "Header",
-        Weight = 0,
-
-        Spacing = 2,
-        ui:Label { ID = "HeaderTitle", Text = "ClipTimbre", StyleSheet = STYLE_TITLE, Weight = 0 },
-        ui:Label { ID = "HeaderRuntime", Text = version_label, StyleSheet = STYLE_MUTED, Weight = 0 },
-        ui:Label { ID = "HeaderContext", Text = "", StyleSheet = STYLE_MICRO, WordWrap = true, Weight = 0 },
-    },
+    Spacing = 8,
 
     ui:HGroup {
-        ID = "Navigation",
+        ID = "Header",
         Weight = 0,
-
-        Spacing = 4,
-        ui:Button { ID = "NavDashboard", Text = "Dashboard", StyleSheet = STYLE_NAV_ACTIVE, Weight = 0 },
-        ui:Button { ID = "NavVoice", Text = "Voice", StyleSheet = STYLE_NAV, Weight = 0 },
-        ui:Button { ID = "NavPauses", Text = "Pauses", StyleSheet = STYLE_NAV, Weight = 0 },
-        ui:Button { ID = "NavYouTube", Text = "YouTube", StyleSheet = STYLE_NAV, Weight = 0 },
-        ui:Button { ID = "NavSettings", Text = "Settings", StyleSheet = STYLE_NAV, Weight = 0 },
-        ui:Button { ID = "NavDiagnostics", Text = "Diagnostics", StyleSheet = STYLE_NAV, Weight = 0 },
-        ui:HGap(0, 1),
+        Spacing = 12,
+        ui:Label { ID = "HeaderTitle", Text = "ClipTimbre", StyleSheet = STYLE_TITLE, Weight = 0 },
+        ui:Label { ID = "HeaderContext", Text = "", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 1 },
+        ui:Label { ID = "UpdateNotice", Text = "Update available", StyleSheet = STYLE_WARN, Visible = false, Weight = 0 },
+        ui:Button { ID = "BackToTools", Text = "Timeline tools", Weight = 0 },
+        ui:Button { ID = "NavSettings", Text = "Settings", Weight = 0 },
+        ui:Button { ID = "NavAbout", Text = "About && updates", Weight = 0 },
     },
 
     separator("TopSeparator"),
 
     ui:Stack {
-        ID = "PageStack",
-        CurrentIndex = 0,
-        Weight = 1,
+        ID = "PageStack", CurrentIndex = 0, Weight = 1,
 
-        -- DASHBOARD ------------------------------------------------------
-        ui:VGroup {
-            ID = "DashboardPage",
-
-            Spacing = 10,
-            ui:Label { Text = "Overview", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
-
+        tool_page(TOOL_PAGES[1], ui:VGroup {
+            ID = "VoiceControls", Weight = 1, Spacing = 8,
             ui:HGroup {
-                Weight = 0,
-                Spacing = 10,
-                ui:VGroup {
-                    Weight = 2,
-                    Spacing = 4,
-                    ui:Label { Text = "TIMELINE", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:Label { ID = "CardTimeline", Text = "—", StyleSheet = STYLE_VALUE, Weight = 0 },
-                    ui:Label { ID = "CardDuration", Text = "—", StyleSheet = STYLE_MUTED, Weight = 0 },
-                },
-                ui:VGroup {
-                    Weight = 1,
-                    Spacing = 4,
-                    ui:Label { Text = "VOICE PROFILE", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:Label { ID = "CardProfile", Text = "—", StyleSheet = STYLE_VALUE, Weight = 0 },
-                    ui:Label { ID = "CardReferences", Text = "—", StyleSheet = STYLE_MUTED, Weight = 0 },
-                },
-            },
-
-            ui:VGroup {
-                Weight = 0,
-                Spacing = 4,
-                ui:Label { Text = "YOUTUBE SAFETY", StyleSheet = STYLE_MICRO, Weight = 0 },
-                ui:Label { ID = "CardYouTube", Text = "Not scanned", StyleSheet = STYLE_VALUE, Weight = 0 },
-                ui:Label { ID = "CardYouTubeMeta", Text = "—", StyleSheet = STYLE_MUTED, Weight = 0 },
-            },
-
-            ui:HGroup {
-                Weight = 0,
-                Spacing = 7,
-                ui:Button { ID = "DashScanYouTube", Text = "Scan YouTube Safety", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
-                ui:Button { ID = "DashFindVoice", Text = "Find voice", Weight = 0 },
-                ui:Button { ID = "DashSetReference", Text = "Set Voice Reference", Weight = 0 },
-                ui:HGap(0, 1),
-            },
-
-            separator("DashSeparator"),
-            ui:HGroup {
-                Weight = 0,
-                Spacing = 10,
-                ui:VGroup {
-                    Weight = 1,
-                    Spacing = 3,
-                    ui:Label { Text = "YouTube scan", StyleSheet = STYLE_SECTION, Weight = 0 },
-                    ui:Label { ID = "DashScanStage", Text = "Idle", StyleSheet = STYLE_MUTED, Weight = 0 },
-                    ui:Label { ID = "DashProgressText", Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
-                },
-                ui:Label { ID = "DashProgressBar", Text = "0%", StyleSheet = "font-size:18px; font-weight:600; color:#4aa6e8;", Weight = 0 },
-            },
-            ui:VGap(0, 1),
-        },
-
-        -- VOICE ----------------------------------------------------------
-        ui:VGroup {
-            ID = "VoicePage",
-
-            Spacing = 10,
-            ui:Label { Text = "Voice", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
-            ui:Label { Text = "Find your voice across an already-cut timeline and maintain a reusable voice profile.", StyleSheet = STYLE_MUTED, Weight = 0 },
-
-            ui:Label { Text = "Reference", StyleSheet = STYLE_SECTION, Weight = 0 },
-            ui:Label { Text = "Place the playhead on clean speech, save a reference, then scan.", StyleSheet = STYLE_MUTED, Weight = 0 },
-            ui:HGroup {
-                Weight = 0, Spacing = 7,
-                ui:Button { ID = "SetReference", Text = "Set temporary reference", Weight = 0 },
-                ui:Button { ID = "FindStreamer", Text = "Find voice", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
-                ui:HGap(0, 1),
-            },
-
-            ui:Label { Text = "Results", StyleSheet = STYLE_SECTION, Weight = 0 },
-            ui:HGroup {
-                Weight = 0, Spacing = 7,
-                ui:Button { ID = "PrevStreamer", Text = "Previous", Weight = 0 },
-                ui:Button { ID = "NextStreamer", Text = "Next", Weight = 0 },
-                ui:Button { ID = "ClearStreamer", Text = "Clear markers", Weight = 0 },
-                ui:HGap(0, 1),
-            },
-
-            separator("VoiceSeparator"),
-            ui:Label { Text = "Voice profile", StyleSheet = STYLE_SECTION, Weight = 0 },
-            ui:HGroup {
-                Weight = 0, Spacing = 7,
+                Weight = 0, Spacing = 9,
+                ui:Label { Text = "Voice profile", StyleSheet = STYLE_SECTION, Weight = 0 },
                 ui:ComboBox {
                     ID = "ProfileChoice", Events = { Activated = true },
                     ToolTip = "Choose a saved voice profile", Weight = 1,
                 },
-                ui:Button { ID = "ProfileStatus", Text = "Profile status", Weight = 0 },
-            },
-            ui:Label { ID = "VoiceProfileSummary", Text = "—", StyleSheet = STYLE_MUTED, Weight = 0 },
-            ui:HGroup {
-                Weight = 0, Spacing = 7,
-                ui:LineEdit { ID = "NewProfileName", PlaceholderText = "New profile name", Weight = 1 },
-                ui:Button { ID = "CreateProfile", Text = "Create profile", Enabled = false, Weight = 0 },
+                ui:Label { ID = "VoiceProfileSummary", Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
+                ui:Button { ID = "FindStreamer", Text = "Find voice", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
             },
             ui:HGroup {
                 Weight = 0, Spacing = 7,
-                ui:Button { ID = "AddSample", Text = "Add voice sample", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
+                ui:Button { ID = "SetReference", Text = "Set temporary reference",
+                    ToolTip = "Save a fallback reference from clean speech at the playhead.", Weight = 0 },
+                ui:Button { ID = "AddSample", Text = "Add voice sample", Weight = 0 },
                 ui:HGap(0, 1),
+                ui:Button { ID = "ManageProfiles", Text = "Manage profiles", Weight = 0 },
             },
+            separator("VoiceResultsSeparator"),
+            ui:Label { Text = "Review matches", StyleSheet = STYLE_SECTION, Weight = 0 },
             ui:HGroup {
                 Weight = 0, Spacing = 7,
+                ui:Button { ID = "PrevStreamer", Text = "Previous", Weight = 0 },
+                ui:Button { ID = "NextStreamer", Text = "Next", Weight = 0 },
+                ui:HGap(0, 1),
                 ui:Button { ID = "Correct", Text = "Correct match", Weight = 0 },
                 ui:Button { ID = "Wrong", Text = "Wrong match", Weight = 0 },
-                ui:Button { ID = "ClearSamples", Text = "Clear samples", StyleSheet = STYLE_DANGER_BUTTON, Weight = 0 },
-                ui:HGap(0, 1),
+                ui:Button { ID = "ClearStreamer", Text = "Clear markers", Weight = 0 },
             },
-            ui:VGap(0, 1),
-        },
+        }),
 
-        -- PAUSES ---------------------------------------------------------
-        ui:VGroup {
-            ID = "PausesPage",
-
-            Spacing = 10,
-            ui:Label { Text = "Pauses", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
-            ui:Label { Text = "Find pauses inside your detected speech and navigate them quickly.", StyleSheet = STYLE_MUTED, Weight = 0 },
+        tool_page(TOOL_PAGES[2], ui:VGroup {
+            ID = "PauseControls", Weight = 1, Spacing = 8,
+            ui:Label { Text = "Speech pauses", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:Label { Text = "Mark gaps in detected speech. Long pauses and uncertain cuts are flagged for manual review.", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 0 },
             ui:HGroup {
                 Weight = 0, Spacing = 7,
                 ui:Button { ID = "MarkPauses", Text = "Mark pauses", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
@@ -255,43 +210,43 @@ local win = disp:AddWindow({
                 ui:HGap(0, 1),
             },
             separator("PauseSeparator"),
-            ui:Label { Text = "Long pauses remain marked for manual review. Tightening uses a safety-copy workflow where supported.", StyleSheet = STYLE_MUTED, Weight = 0 },
-            ui:VGap(0, 1),
-        },
+            ui:Label { Text = "Video playback", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:Label { Text = "Find still frames followed by motion in the selected area of a video track.", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 0 },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
+                ui:Label { Text = "Video track", StyleSheet = STYLE_MUTED, Weight = 0 },
+                ui:SpinBox { ID = "VideoPauseTrack", Minimum = 1, Maximum = 128, Value = 1, Weight = 0 },
+                ui:Label { Text = "Crop %", StyleSheet = STYLE_MUTED, Weight = 0 },
+                ui:LineEdit { ID = "VideoPauseCrop", Text = "0,0,100,100", ToolTip = "x, y, width, height as percentages. Exclude a moving webcam overlay.", MinimumSize = {115, 0}, Weight = 0 },
+                ui:HGap(0, 1),
+            },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
+                ui:Button { ID = "MarkVideoPauses", Text = "Mark possible video pauses", Weight = 0 },
+                ui:Button { ID = "ClearVideoPauses", Text = "Clear video markers", Weight = 0 },
+                ui:HGap(0, 1),
+            },
+        }),
 
-        -- YOUTUBE --------------------------------------------------------
-        -- Intentionally single-column. No side panel, no Tree max-height,
-        -- no controls layered beside a flexible widget.
-        ui:VGroup {
-            ID = "YouTubePage",
-
-            Spacing = 7,
-            ui:Label { Text = "YouTube Safety", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
+        tool_page(TOOL_PAGES[3], ui:VGroup {
+            ID = "YouTubeControls", Weight = 1, Spacing = 7,
             ui:HGroup {
                 Weight = 0,
                 Spacing = 8,
                 ui:Button { ID = "ScanYouTube", Text = "Scan timeline", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
-                ui:Label { ID = "YTCountHigh", Text = "HIGH 0", StyleSheet = "font-size:13px; font-weight:600; color:#f58cba;", Weight = 0 },
-                ui:Label { ID = "YTCountReview", Text = "REVIEW 0", StyleSheet = "font-size:13px; font-weight:600; color:#54d4de;", Weight = 0 },
-                ui:Label { ID = "YTCountPersonal", Text = "PERSONAL 0", StyleSheet = "font-size:13px; font-weight:600; color:#f0a24d;", Weight = 0 },
                 ui:HGap(0, 1),
+                ui:Label { ID = "YTCountHigh", Text = "HIGH 0", StyleSheet = "font-weight:600; color:#dc9db8;", ToolTip = "Pink timeline markers", Weight = 0 },
+                ui:Label { ID = "YTCountReview", Text = "REVIEW 0", StyleSheet = "font-weight:600; color:#8fc1c5;", ToolTip = "Cyan timeline markers", Weight = 0 },
+                ui:Label { ID = "YTCountPersonal", Text = "PERSONAL 0", StyleSheet = "font-weight:600; color:#d4ad82;", ToolTip = "Orange timeline markers", Weight = 0 },
+                ui:Label { Text = "MUTED", StyleSheet = "font-weight:600; color:#c497d4;", ToolTip = "Fuchsia timeline markers", Weight = 0 },
             },
 
             ui:HGroup {
                 Weight = 0,
                 Spacing = 8,
                 ui:Label { ID = "YTScanRuntime", Text = "Runtime: —", StyleSheet = STYLE_MUTED, Weight = 0 },
-                ui:Label { ID = "YTProgressBar", Text = "0%", StyleSheet = "font-weight:600; color:#4aa6e8;", Weight = 0 },
+                ui:Label { ID = "YTProgressBar", Text = "0%", StyleSheet = STYLE_PROGRESS, Weight = 0 },
                 ui:Label { ID = "YTProgressText", Text = "Idle", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 1 },
-            },
-
-            -- Dedicated YouTube marker palette; no overlap with voice/pauses.
-            ui:HGroup { Weight = 0, Spacing = 12,
-                ui:Label { Text = "● REVIEW", StyleSheet = "color:#54d4de; font-size:11px;", Weight = 0 },
-                ui:Label { Text = "● HIGH", StyleSheet = "color:#f58cba; font-size:11px;", Weight = 0 },
-                ui:Label { Text = "● PERSONAL", StyleSheet = "color:#f0a24d; font-size:11px;", Weight = 0 },
-                ui:Label { Text = "● MUTED", StyleSheet = "color:#dc80ea; font-size:11px;", Weight = 0 },
-                ui:HGap(0, 1),
             },
 
             ui:HGroup {
@@ -300,6 +255,9 @@ local win = disp:AddWindow({
                 ui:LineEdit { ID = "YTSearch", PlaceholderText = "Filter risks…", Weight = 1 },
                 ui:ComboBox { ID = "YTSeverityFilter", Weight = 0 },
                 ui:Button { ID = "YTRefreshResults", Text = "Refresh", Weight = 0 },
+                ui:Button { ID = "PrevYouTube", Text = "Previous", Weight = 0 },
+                ui:Button { ID = "NextYouTube", Text = "Next", Weight = 0 },
+                ui:Button { ID = "ClearYouTube", Text = "Clear markers", Weight = 0 },
             },
 
             ui:Tree {
@@ -313,19 +271,9 @@ local win = disp:AddWindow({
             ui:TextEdit {
                 ID = "YTSelectionDetails",
                 ReadOnly = true,
-                MinimumSize = { 0, 54 },
-                MaximumSize = { 16777215, 54 },
+                MinimumSize = {0, 54}, MaximumSize = {16777215, 54},
                 StyleSheet = STYLE_MUTED,
                 Weight = 0,
-            },
-
-            ui:HGroup {
-                Weight = 0,
-                Spacing = 6,
-                ui:Button { ID = "PrevYouTube", Text = "Previous", Weight = 0 },
-                ui:Button { ID = "NextYouTube", Text = "Next", Weight = 0 },
-                ui:Button { ID = "ClearYouTube", Text = "Clear markers", Weight = 0 },
-                ui:HGap(0, 1),
             },
 
             separator("YTSeparator"),
@@ -360,6 +308,26 @@ local win = disp:AddWindow({
                 ui:CheckBox { ID = "CensorOther", Text = "Fraud / Terrorism", Checked = false, Weight = 0 },
                 ui:HGap(0, 1),
             },
+        }),
+
+        tool_page(TOOL_PAGES[4]),
+
+        ui:VGroup {
+            ID = "ProfilesPage", Spacing = 9,
+            ui:Label { Text = "Manage voice profiles", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
+            ui:Label { ID = "ProfileManagementContext", Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
+                ui:LineEdit { ID = "NewProfileName", PlaceholderText = "New profile name", Weight = 1 },
+                ui:Button { ID = "CreateProfile", Text = "Create profile", Enabled = false, Weight = 0 },
+            },
+            ui:HGroup {
+                Weight = 0, Spacing = 7,
+                ui:Button { ID = "ProfileStatus", Text = "Profile status", Weight = 0 },
+                ui:Button { ID = "ClearSamples", Text = "Clear samples", StyleSheet = STYLE_DANGER_BUTTON, Weight = 0 },
+                ui:HGap(0, 1),
+            },
+            ui:VGap(0, 1),
         },
 
         -- SETTINGS -------------------------------------------------------
@@ -368,84 +336,45 @@ local win = disp:AddWindow({
 
             Spacing = 9,
             ui:Label { Text = "Settings", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
-            ui:Label { Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
-
-            ui:Label { Text = "YouTube transcription", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:Label { Text = "Transcription", StyleSheet = STYLE_SECTION, Weight = 0 },
             ui:HGroup {
-                Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Model", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:ComboBox { ID = "SettingModel", ToolTip = "Whisper model. Small is the recommended speed/accuracy balance.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Language", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:ComboBox { ID = "SettingLanguage", ToolTip = "Force a language or let Whisper detect it automatically.", Weight = 0 },
-                },
-            },
-            ui:HGroup {
-                Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Engine", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:ComboBox { ID = "SettingEngine", ToolTip = "Auto selects MLX/Metal on Apple Silicon and CUDA on supported Windows systems.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Chunk length (sec)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingChunk", ToolTip = "Audio processed per Whisper chunk. 600 seconds is a safe default.", Weight = 0 },
-                },
+                Weight = 0, Spacing = 8,
+                field("Model", ui:ComboBox { ID = "SettingModel", ToolTip = "Whisper model. Small balances speed and accuracy.", Weight = 0 }),
+                field("Language", ui:ComboBox { ID = "SettingLanguage", ToolTip = "Force a language or let Whisper detect it automatically.", Weight = 0 }),
+                field("Engine", ui:ComboBox { ID = "SettingEngine", ToolTip = "Auto selects MLX on Apple Silicon and compatible engines elsewhere.", Weight = 0 }),
+                field("Chunk length (sec)", ui:LineEdit { ID = "SettingChunk", ToolTip = "Audio processed per Whisper chunk.", Weight = 0 }),
             },
             ui:Label { ID = "SettingEngineRuntime", Text = "Current runtime: —", StyleSheet = STYLE_MICRO, Weight = 0 },
 
-            separator("SettingsSeparator1"),
-            ui:Label { Text = "Voice + Auto Censor", StyleSheet = STYLE_SECTION, Weight = 0 },
+            separator("SettingsVoiceSeparator"),
+            ui:Label { Text = "Voice recognition", StyleSheet = STYLE_SECTION, Weight = 0 },
             ui:HGroup {
                 Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Voice threshold", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingThreshold", ToolTip = "Higher values are stricter when deciding whether speech belongs to your voice profile.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Pad before (sec)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingPadBefore", ToolTip = "Extra censor time before a matched word so consonants do not leak through.", Weight = 0 },
-                },
+                field("Voice threshold", ui:LineEdit { ID = "SettingThreshold", ToolTip = "Higher values are stricter when deciding whether speech matches the profile.", Weight = 0 }),
+                ui:Label { Text = "Higher thresholds require a closer voice match.", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 2 },
+            },
+
+            separator("SettingsCensorSeparator"),
+            ui:Label { Text = "Auto Censor", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:HGroup {
+                Weight = 0, Spacing = 8,
+                field("Pad before (sec)", ui:LineEdit { ID = "SettingPadBefore", ToolTip = "Extra censor time before a matched word.", Weight = 0 }),
+                field("Pad after (sec)", ui:LineEdit { ID = "SettingPadAfter", ToolTip = "Extra censor time after a matched word.", Weight = 0 }),
+                field("Censor fade (ms)", ui:LineEdit { ID = "SettingCensorFade", ToolTip = "Fade down and up around a mute or beep.", Weight = 0 }),
             },
             ui:HGroup {
-                Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Pad after (sec)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingPadAfter", ToolTip = "Extra censor time after a matched word so word endings do not leak through.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Beep frequency (Hz)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingBeepHz", ToolTip = "Frequency of the censor tone in Beep mode.", Weight = 0 },
-                },
+                Weight = 0, Spacing = 8,
+                field("Beep frequency (Hz)", ui:LineEdit { ID = "SettingBeepHz", ToolTip = "Frequency of the censor tone in Beep mode.", Weight = 0 }),
+                field("Beep level (dB)", ui:LineEdit { ID = "SettingBeepDb", ToolTip = "Level of the censor tone.", Weight = 0 }),
+                field("Source under beep (dB)", ui:LineEdit { ID = "SettingBeepDuck", ToolTip = "How far the original audio is ducked under the beep.", Weight = 0 }),
             },
-            ui:HGroup {
-                Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Beep level (dB)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingBeepDb", ToolTip = "Level of the censor tone. -12 dB is a comfortable default.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Censor fade (ms)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingCensorFade", ToolTip = "Smooth fade down/up around mute or beep. 60–100 ms avoids hard cuts.", Weight = 0 },
-                },
-            },
-            ui:HGroup {
-                Weight = 0, Spacing = 10,
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { Text = "Source under beep (dB)", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:LineEdit { ID = "SettingBeepDuck", ToolTip = "How far the original audio is ducked under the beep. -36 dB masks speech while keeping ambience.", Weight = 0 },
-                },
-                ui:VGroup { Weight = 1, Spacing = 3,
-                    ui:Label { ID = "SettingsMixNote", Text = "Beep and Smooth Mute use one mix.", StyleSheet = STYLE_MICRO, Weight = 0 },
-                    ui:Label { ID = "SettingsTracksNote", Text = "Timeline Mute keeps separate tracks.", StyleSheet = STYLE_MICRO, Weight = 0 },
-                },
-            },
+            ui:Label { Text = "Timeline Mute keeps separate tracks. Beep and Smooth Mute use one mix.", StyleSheet = STYLE_MICRO, WordWrap = true, Weight = 0 },
             ui:HGroup {
                 Weight = 0, Spacing = 7,
                 ui:Button { ID = "SaveSettings", Text = "Save settings", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
                 ui:Button { ID = "EditTerms", Text = "Edit risk rules", Weight = 0 },
                 ui:HGap(0, 1),
+                ui:Button { ID = "NavDiagnostics", Text = "Diagnostics", Weight = 0 },
             },
             ui:Label { ID = "SettingsStatus", Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
             ui:VGap(0, 1),
@@ -457,6 +386,7 @@ local win = disp:AddWindow({
 
             Spacing = 8,
             ui:Label { Text = "Diagnostics", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
+            ui:Label { ID = "HeaderRuntime", Text = version_label, StyleSheet = STYLE_MUTED, Weight = 0 },
             ui:Label { ID = "DiagnosticsSummary", Text = "", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 0 },
             ui:HGroup {
                 Weight = 0,
@@ -472,8 +402,33 @@ local win = disp:AddWindow({
                 ID = "LogView",
                 ReadOnly = true,
                 Weight = 1,
-                StyleSheet = "background-color:#15171a; color:#c9d1d9; font-family:monospace; font-size:11px; border:1px solid #363b43;",
+                StyleSheet = "background-color:#17181b; color:#ceced5; font-family:monospace; font-size:11px; border:1px solid #3c3d43;",
             },
+        },
+
+        -- ABOUT & UPDATES ------------------------------------------------
+        ui:VGroup {
+            ID = "AboutPage",
+            Spacing = 8,
+            ui:Label { Text = "About ClipTimbre", StyleSheet = STYLE_PAGE_TITLE, Weight = 0 },
+            ui:Label { Text = "Updates", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:Label { ID = "UpdateVersion", Text = "", StyleSheet = STYLE_MUTED, WordWrap = true, Weight = 0 },
+            ui:Label { ID = "UpdateStatus", Text = "", StyleSheet = STYLE_MUTED, Weight = 0 },
+            ui:HGroup {
+                ID = "UpdateActions", Weight = 0, Spacing = 6,
+                ui:Button { ID = "CheckUpdates", Text = "Check for updates", StyleSheet = STYLE_ACCENT_BUTTON, Weight = 0 },
+                ui:Button { ID = "OpenRelease", Text = "Open release", Enabled = false, Weight = 0 },
+                ui:HGap(0, 1),
+            },
+            separator("AboutSeparator"),
+            ui:Label { Text = "Project links", StyleSheet = STYLE_SECTION, Weight = 0 },
+            ui:HGroup {
+                ID = "ProjectLinks", Weight = 0, Spacing = 6,
+                ui:Button { ID = "OpenGitHub", Text = "GitHub repository", Weight = 0 },
+                ui:Button { ID = "OpenTelegram", Text = "Telegram @dev_dive", Weight = 0 },
+                ui:HGap(0, 1),
+            },
+            ui:VGap(0, 1),
         },
     },
 
@@ -493,43 +448,73 @@ local itm = win:GetItems()
 local scan_timer = ui:Timer { ID = "ScanTimer", Interval = 1000, SingleShot = true }
 local context_timer = ui:Timer { ID = "ContextTimer", Interval = 1200, SingleShot = false }
 local active_scan = nil
+local update_job
+local latest_release
 local busy = false
-local selected_page = 0
+local PAGE_VOICE, PAGE_COLLAPSED, PAGE_PROFILES, PAGE_SETTINGS, PAGE_DIAGNOSTICS, PAGE_ABOUT = 0, 3, 4, 5, 6, 7
+local selected_page = PAGE_VOICE
+local last_tools_page = PAGE_VOICE
+local voice_summary = ""
+local youtube_summary = "Not scanned"
+local youtube_tooltip = ""
 local risk_item_events = {}
 local cached_events = {}
 local risk_empty_message = "Open a timeline to scan its audio."
 local profile_choices = {}
 local selected_profile = ""
 local timeline_controls = {
-    "DashScanYouTube", "DashFindVoice", "DashSetReference", "SetReference", "FindStreamer",
+    "SetReference", "FindStreamer",
     "PrevStreamer", "NextStreamer", "ClearStreamer", "AddSample", "Correct", "Wrong",
-    "MarkPauses", "TightenPauses", "PrevPause", "NextPause", "ClearPauses", "ScanYouTube",
+    "MarkPauses", "TightenPauses", "PrevPause", "NextPause", "ClearPauses", "MarkVideoPauses", "ClearVideoPauses", "ScanYouTube",
     "PrevYouTube", "NextYouTube", "ClearYouTube", "AutoCensor", "Diagnostics",
 }
 local timeline_available = false
 local last_context_key = nil
 
-local PAGE_IDS = {
-    { button = "NavDashboard", page = "DashboardPage", index = 0 },
-    { button = "NavVoice", page = "VoicePage", index = 1 },
-    { button = "NavPauses", page = "PausesPage", index = 2 },
-    { button = "NavYouTube", page = "YouTubePage", index = 3 },
-    { button = "NavSettings", page = "SettingsPage", index = 4 },
-    { button = "NavDiagnostics", page = "DiagnosticsPage", index = 5 },
-}
+local PAGE_IDS = {"VoicePage", "PausesPage", "YouTubePage", "CollapsedPage", "ProfilesPage", "SettingsPage", "DiagnosticsPage", "AboutPage"}
+
+local function update_tool_headers()
+    local scan_status = youtube_summary
+    if active_scan then
+        if active_scan.cancel_requested then
+            scan_status = "Stopping scan…"
+        elseif active_scan.context_key == last_context_key then
+            scan_status = "Scanning " .. itm.YTProgressBar.Text
+        else
+            scan_status = "Scanning another timeline"
+        end
+    end
+    local summary = {
+        Voice = voice_summary,
+        Pauses = "Speech and video",
+        YouTube = scan_status,
+    }
+    for _, page in ipairs(TOOL_PAGES) do
+        for _, section in ipairs(TOOL_SECTIONS) do
+            local button = itm[header_id(page, section)]
+            local expanded = page.section == section
+            local title = TOOL_TITLES[section]
+            button.Text = title .. (not expanded and summary[section] ~= "" and "  ·  " .. summary[section] or "")
+            button.ToolTip = (expanded and "Collapse " or "Expand ") .. title ..
+                (section == "YouTube" and youtube_tooltip ~= "" and ("\n" .. youtube_tooltip) or "")
+        end
+    end
+end
 
 local function set_page(index)
     selected_page = index
     itm.PageStack.CurrentIndex = index
-    for _, entry in ipairs(PAGE_IDS) do
-        local active = entry.index == index
+    for position, id in ipairs(PAGE_IDS) do
         -- Some Resolve builds leave inactive stack pages visible.
-        itm[entry.page].Visible = active
-        itm[entry.button].StyleSheet = active and STYLE_NAV_ACTIVE or STYLE_NAV
+        itm[id].Visible = position - 1 == index
     end
+    if index <= PAGE_COLLAPSED then last_tools_page = index end
+    itm.BackToTools.Visible = index > PAGE_COLLAPSED
+    itm.NavSettings.StyleSheet = (index == PAGE_SETTINGS or index == PAGE_DIAGNOSTICS) and STYLE_ACTIVE_BUTTON or ""
+    itm.NavAbout.StyleSheet = index == PAGE_ABOUT and STYLE_ACTIVE_BUTTON or ""
     pcall(function() itm.PageStack:Update() end)
 
-    if index == 5 then
+    if index == PAGE_DIAGNOSTICS then
         pcall(function() itm.LogView.PlainText = sv.get_log_tail(220) end)
     end
 end
@@ -673,14 +658,18 @@ local function update_snapshot(message)
         last_context_key = nil
         timeline_available = false
         for _, id in ipairs(timeline_controls) do itm[id].Enabled = false end
+        itm.ScanYouTube.Enabled = active_scan ~= nil
         cached_events = {}
         risk_empty_message = "Could not read the current timeline."
         refresh_risk_tree()
         itm.YTCountHigh.Text = "HIGH 0"
         itm.YTCountReview.Text = "REVIEW 0"
         itm.YTCountPersonal.Text = "PERSONAL 0"
-        itm.CardYouTube.Text = "Timeline unavailable"
-        itm.CardYouTubeMeta.Text = ""
+        youtube_summary = "Timeline unavailable"
+        youtube_tooltip = ""
+        update_tool_headers()
+        itm.HeaderContext.Text = "Timeline unavailable"
+        itm.HeaderContext.ToolTip = ""
         itm.HeaderRuntime.Text = version_label
         itm.YTScanRuntime.Text = "Runtime: unavailable"
         itm.SettingEngineRuntime.Text = "Current runtime: unavailable"
@@ -695,27 +684,22 @@ local function update_snapshot(message)
         itm[id].Enabled = timeline_available
     end
     itm.ScanYouTube.Enabled = timeline_available or active_scan ~= nil
-    itm.DashScanYouTube.Enabled = itm.ScanYouTube.Enabled
     itm.AutoCensor.Enabled = timeline_available and not active_scan
     if changed then
         itm.YTProgressBar.Text = "0%"
-        itm.DashProgressBar.Text = "0%"
         itm.YTProgressText.Text = "Idle"
-        itm.DashProgressText.Text = ""
-        itm.DashScanStage.Text = "Idle"
     end
-    itm.HeaderContext.Text = timeline_available and
-        compact_context(snap.project .. "  /  " .. snap.timeline, 72) or "Open a timeline in Resolve to start editing"
+    local timeline_context = snap.project .. " / " .. snap.timeline
+    itm.HeaderContext.Text = timeline_available and string.format("%s  ·  %s  ·  %.3g fps",
+        compact_context(timeline_context, 48), snap.duration_text, snap.fps) or "Open a timeline in Resolve to start editing"
+    itm.HeaderContext.ToolTip = timeline_available and timeline_context or ""
     local rt = tostring(snap.runtime_engine or "not scanned")
     if tostring(snap.runtime_device or "") ~= "" then rt = rt .. " / " .. tostring(snap.runtime_device) end
     itm.HeaderRuntime.Text = "Runtime: " .. rt .. "  •  " .. version_label
-    itm.CardTimeline.Text = timeline_available and compact_context(snap.timeline, 36) or "No timeline open"
-    itm.CardTimeline.ToolTip = snap.timeline
-    itm.CardDuration.Text = timeline_available and string.format("%s  •  %.3g fps", snap.duration_text, snap.fps) or ""
-    itm.CardProfile.Text = compact_context(snap.profile, 24)
-    itm.CardProfile.ToolTip = snap.profile
-    itm.CardReferences.Text = tostring(snap.reference_count) .. " voice sample(s)"
-    itm.VoiceProfileSummary.Text = string.format("%d voice sample(s)", snap.reference_count)
+    voice_summary = compact_context(snap.profile, 36)
+    local sample_count = string.format("%d voice sample%s", snap.reference_count, snap.reference_count == 1 and "" or "s")
+    itm.VoiceProfileSummary.Text = sample_count
+    itm.ProfileManagementContext.Text = voice_summary .. "  ·  " .. sample_count
     if snap.profile ~= selected_profile then show_active_profile(snap.profile) end
 
     cached_events = snap.youtube_rows
@@ -723,19 +707,15 @@ local function update_snapshot(message)
         or (snap.youtube_valid and "No risks found in this scan." or "Scan this timeline to see its results.")
     refresh_risk_tree()
 
-    if not timeline_available then
-        itm.CardYouTube.Text = "No timeline open"
-        itm.CardYouTube.StyleSheet = STYLE_MUTED
-        itm.CardYouTubeMeta.Text = ""
-    elseif snap.youtube_valid then
-        itm.CardYouTube.Text = string.format("%d HIGH / %d REVIEW", snap.youtube_high, snap.youtube_review)
-        itm.CardYouTube.StyleSheet = snap.youtube_high > 0 and STYLE_ERROR or (snap.youtube_review > 0 and STYLE_WARN or STYLE_SUCCESS)
-        itm.CardYouTubeMeta.Text = "Last scan: " .. tostring(snap.youtube_scanned_text)
+    if snap.youtube_valid then
+        youtube_summary = string.format("%d high / %d review", snap.youtube_high, snap.youtube_review)
+        youtube_tooltip = "Last scan: " .. tostring(snap.youtube_scanned_text)
     else
-        itm.CardYouTube.Text = "Not scanned"
-        itm.CardYouTube.StyleSheet = STYLE_WARN
-        itm.CardYouTubeMeta.Text = tostring(snap.youtube_problem ~= "" and snap.youtube_problem or "Run YouTube Safety scan")
+        youtube_summary = timeline_available and "Not scanned" or "No timeline open"
+        youtube_tooltip = snap.youtube_problem == "YouTube scan state is missing" and "" or snap.youtube_problem
     end
+    itm.YTScanRuntime.ToolTip = youtube_tooltip
+    update_tool_headers()
     itm.YTCountHigh.Text = "HIGH " .. tostring(snap.youtube_high)
     itm.YTCountReview.Text = "REVIEW " .. tostring(snap.youtube_review)
     local personal_count = 0
@@ -747,8 +727,8 @@ local function update_snapshot(message)
     itm.YTCountPersonal.Text = "PERSONAL " .. tostring(personal_count)
     itm.YTScanRuntime.Text = "Runtime: " .. rt
     itm.SettingEngineRuntime.Text = "Current runtime: " .. rt
-    itm.DiagnosticsSummary.Text = compact_context(string.format("%s · %s (%d samples) · %d high / %d review · %s",
-        snap.timeline, snap.profile, snap.reference_count, snap.youtube_high, snap.youtube_review, rt), 120)
+    itm.DiagnosticsSummary.Text = compact_context(string.format("%s · %s (%d samples) · %d high / %d review",
+        timeline_available and snap.timeline or "No timeline open", snap.profile, snap.reference_count, snap.youtube_high, snap.youtube_review), 120)
     if message then itm.FooterStatus.Text = timeline_available and message or "No timeline open" end
     itm.FooterDot.StyleSheet = timeline_available and STYLE_SUCCESS or STYLE_MUTED
 end
@@ -810,9 +790,7 @@ end
 
 local function set_scan_controls(running)
     itm.ScanYouTube.Text = running and "Cancel scan" or "Scan timeline"
-    itm.DashScanYouTube.Text = running and "Cancel scan" or "Scan YouTube Safety"
     itm.ScanYouTube.StyleSheet = running and STYLE_DANGER_BUTTON or STYLE_ACCENT_BUTTON
-    itm.DashScanYouTube.StyleSheet = running and STYLE_DANGER_BUTTON or STYLE_ACCENT_BUTTON
     itm.AutoCensor.Enabled = timeline_available and not running
 end
 
@@ -820,8 +798,7 @@ local function update_scan_ui(status)
     if active_scan.context_key ~= last_context_key then
         local detail = "Scan running on another timeline."
         itm.YTProgressText.Text = detail
-        itm.DashProgressText.Text = detail
-        itm.DashScanStage.Text = "Scanning another timeline"
+        update_tool_headers()
         itm.FooterStatus.Text = detail
         itm.FooterDot.StyleSheet = STYLE_WARN
         return
@@ -843,10 +820,8 @@ local function update_scan_ui(status)
     if runtime ~= "" then detail = detail .. " — " .. runtime end
     if status.cancel_requested then detail = "Stopping scan…" end
     itm.YTProgressBar.Text = string.format("%.0f%%", p)
-    itm.DashProgressBar.Text = string.format("%.0f%%", p)
     itm.YTProgressText.Text = detail
-    itm.DashProgressText.Text = detail
-    itm.DashScanStage.Text = stage
+    update_tool_headers()
     itm.FooterStatus.Text = detail
     itm.FooterDot.StyleSheet = STYLE_WARN
 end
@@ -858,32 +833,23 @@ local function finish_scan_ui(status)
     update_snapshot("Ready")
     if finished_key ~= last_context_key then
         itm.YTProgressText.Text = "Idle"
-        itm.DashProgressText.Text = ""
-        itm.DashScanStage.Text = "Idle"
         return
     end
     if status.cancelled then
         itm.YTProgressText.Text = "Scan cancelled."
-        itm.DashProgressText.Text = "Scan cancelled."
-        itm.DashScanStage.Text = "Cancelled"
         itm.FooterStatus.Text = "YouTube scan cancelled"
         itm.FooterDot.StyleSheet = STYLE_WARN
         return
     end
     if status.failed then
         itm.YTProgressText.Text = "Scan failed: " .. tostring(status.error or "unknown error")
-        itm.DashProgressText.Text = itm.YTProgressText.Text
-        itm.DashScanStage.Text = "Failed"
         itm.FooterStatus.Text = itm.YTProgressText.Text
         itm.FooterDot.StyleSheet = STYLE_ERROR
         pcall(function() itm.LogView.PlainText = sv.get_log_tail(220) end)
         return
     end
     itm.YTProgressBar.Text = "100%"
-    itm.DashProgressBar.Text = "100%"
     itm.YTProgressText.Text = string.format("Complete — %d HIGH, %d REVIEW", tonumber(status.high_count) or 0, tonumber(status.review_count) or 0)
-    itm.DashProgressText.Text = itm.YTProgressText.Text
-    itm.DashScanStage.Text = "Complete"
     itm.FooterStatus.Text = "YouTube scan complete"
 end
 
@@ -908,7 +874,7 @@ local function cancel_youtube_scan()
     pcall(function() sv.cancel_youtube_safety_scan(active_scan) end)
     itm.FooterStatus.Text = "Stopping YouTube scan…"
     itm.YTProgressText.Text = "Stopping scan…"
-    itm.DashProgressText.Text = "Stopping scan…"
+    update_tool_headers()
 end
 
 -- Populate controls -----------------------------------------------------------
@@ -939,16 +905,27 @@ itm.YTRisks.ColumnWidth[2] = 140
 itm.YTRisks.ColumnWidth[3] = 220
 
 -- Navigation ----------------------------------------------------------------
-function win.On.NavDashboard.Clicked(ev) set_page(0) end
-function win.On.NavVoice.Clicked(ev)
-    set_page(1)
-    local ok, err = pcall(refresh_profiles)
-    if not ok then itm.FooterStatus.Text = tostring(err):gsub("^.-:%d+: ", "") end
+function win.On.BackToTools.Clicked(ev) set_page(last_tools_page) end
+for _, page in ipairs(TOOL_PAGES) do
+    for position, section in ipairs(TOOL_SECTIONS) do
+        local id = header_id(page, section)
+        local expanded = section == page.section
+        local target = expanded and PAGE_COLLAPSED or position - 1
+        win.On[id].Clicked = function(ev)
+            itm[id].Checked = expanded
+            set_page(target)
+            if not expanded and section == "Voice" then
+                local ok, err = pcall(refresh_profiles)
+                if not ok then itm.FooterStatus.Text = tostring(err):gsub("^.-:%d+: ", "") end
+            elseif not expanded and section == "YouTube" then
+                update_snapshot()
+            end
+        end
+    end
 end
-function win.On.NavPauses.Clicked(ev) set_page(2) end
-function win.On.NavYouTube.Clicked(ev) set_page(3); update_snapshot() end
-function win.On.NavSettings.Clicked(ev) set_page(4); load_settings() end
-function win.On.NavDiagnostics.Clicked(ev) set_page(5) end
+function win.On.NavSettings.Clicked(ev) set_page(PAGE_SETTINGS); load_settings() end
+function win.On.NavDiagnostics.Clicked(ev) set_page(PAGE_DIAGNOSTICS) end
+function win.On.NavAbout.Clicked(ev) set_page(PAGE_ABOUT) end
 
 -- Window / status ------------------------------------------------------------
 function win.On.ClipTimbreWindow.Close(ev)
@@ -960,16 +937,12 @@ function win.On.Close.Clicked(ev)
     disp:ExitLoop()
 end
 function win.On.Refresh.Clicked(ev)
-    if selected_page == 1 then pcall(refresh_profiles) end
+    if selected_page == PAGE_VOICE or selected_page == PAGE_PROFILES then pcall(refresh_profiles) end
     update_snapshot("Status refreshed")
 end
 
--- Dashboard -----------------------------------------------------------------
-function win.On.DashScanYouTube.Clicked(ev) if active_scan then cancel_youtube_scan() else start_youtube_scan() end end
-function win.On.DashFindVoice.Clicked(ev) run_action("Find voice", sv.find_streamer) end
-function win.On.DashSetReference.Clicked(ev) run_action("Set reference", sv.set_reference) end
-
 -- Voice ---------------------------------------------------------------------
+function win.On.ManageProfiles.Clicked(ev) set_page(PAGE_PROFILES) end
 function win.On.SetReference.Clicked(ev) run_action("Set reference", sv.set_reference) end
 function win.On.FindStreamer.Clicked(ev) run_action("Find voice", sv.find_streamer) end
 function win.On.PrevStreamer.Clicked(ev) run_action("Previous voice match", sv.previous_streamer) end
@@ -1008,6 +981,10 @@ function win.On.TightenPauses.Clicked(ev) run_timeline_ui_action("Tighten pauses
 function win.On.PrevPause.Clicked(ev) run_action("Previous pause", sv.previous_pause) end
 function win.On.NextPause.Clicked(ev) run_action("Next pause", sv.next_pause) end
 function win.On.ClearPauses.Clicked(ev) run_action("Clear pause markers", sv.clear_pause_markers) end
+function win.On.MarkVideoPauses.Clicked(ev)
+    run_action("Scan video playback", function() sv.mark_video_pauses(itm.VideoPauseTrack.Value, itm.VideoPauseCrop.Text) end)
+end
+function win.On.ClearVideoPauses.Clicked(ev) run_action("Clear video markers", sv.clear_video_pauses) end
 
 -- YouTube -------------------------------------------------------------------
 function win.On.ScanYouTube.Clicked(ev) if active_scan then cancel_youtube_scan() else start_youtube_scan() end end
@@ -1035,8 +1012,10 @@ function win.On.YTRisks.ItemClicked(ev)
     if not ev.item or not risk_context_is_current() then return end
     local event = risk_item_events[tonumber(ev.item.WhatsThis[0])]
     if not event then return end
-    itm.YTSelectionDetails.PlainText = string.format("%s  •  %s  •  %s\n%s\n%s", format_clock(event.start),
-        event.severity:upper(), pretty_category(event.category), event.phrase, event.context)
+    local review_only = event.auto_censor == false or event.category == "frequent_profanity"
+    local badge = review_only and "  •  Manual review only" or ""
+    itm.YTSelectionDetails.PlainText = string.format("%s  •  %s  •  %s%s\n%s\n%s", format_clock(event.start),
+        event.severity:upper(), pretty_category(event.category), badge, event.phrase, event.context)
     itm.FooterStatus.Text = "Selected risk at " .. format_clock(event.start)
 end
 function win.On.YTRisks.ItemDoubleClicked(ev)
@@ -1087,8 +1066,67 @@ function win.On.OpenLog.Clicked(ev) pcall(sv.open_log) end
 function win.On.OpenData.Clicked(ev) pcall(sv.open_app_folder) end
 function win.On.ClearCache.Clicked(ev) run_action("Clear cache", sv.clear_cache) end
 
+-- About & updates -----------------------------------------------------------
+local function show_update_info()
+    local info = sv.get_update_info(installed_version)
+    latest_release = info and info.latest
+    local label = installed_version and ("Installed v" .. installed_version) or version_label
+    if info then
+        label = label .. "  •  Latest release v" .. info.latest ..
+            "  •  Last checked " .. os.date("%Y-%m-%d %H:%M", info.checked_at)
+    end
+    itm.UpdateVersion.Text = label
+    itm.UpdateNotice.Visible = info ~= nil and info.relation == -1
+    itm.OpenRelease.Enabled = info ~= nil
+    if not info then
+        itm.UpdateStatus.Text = "No update check yet."
+        itm.UpdateStatus.StyleSheet = STYLE_MUTED
+    elseif info.relation == -1 then
+        itm.UpdateStatus.Text = "Update available."
+        itm.UpdateStatus.StyleSheet = STYLE_WARN
+    elseif info.relation == 0 then
+        itm.UpdateStatus.Text = "ClipTimbre is up to date."
+        itm.UpdateStatus.StyleSheet = STYLE_SUCCESS
+    elseif info.relation == 1 then
+        itm.UpdateStatus.Text = "Installed version is newer than the latest release."
+        itm.UpdateStatus.StyleSheet = STYLE_MUTED
+    else
+        itm.UpdateStatus.Text = "Installed version could not be verified."
+        itm.UpdateStatus.StyleSheet = STYLE_WARN
+    end
+end
+
+function win.On.CheckUpdates.Clicked(ev)
+    if update_job then return end
+    local ok, job, message = pcall(sv.start_update_check)
+    if not ok or not job then
+        itm.UpdateStatus.Text = message or "Could not start the update check."
+        itm.UpdateStatus.StyleSheet = STYLE_ERROR
+        return
+    end
+    update_job = job
+    itm.CheckUpdates.Enabled = false
+    itm.UpdateStatus.Text = "Checking GitHub for updates…"
+    itm.UpdateStatus.StyleSheet = STYLE_MUTED
+end
+function win.On.OpenRelease.Clicked(ev) sv.open_release(latest_release) end
+function win.On.OpenGitHub.Clicked(ev) sv.open_github() end
+function win.On.OpenTelegram.Clicked(ev) sv.open_telegram() end
+
 function disp.On.Timeout(ev)
     if ev.who == context_timer.ID then
+        if update_job then
+            local checked = sv.poll_update_check(update_job)
+            if checked ~= nil then
+                update_job = nil
+                itm.CheckUpdates.Enabled = true
+                show_update_info()
+                if not checked then
+                    itm.UpdateStatus.Text = "Could not check GitHub for updates. Try again."
+                    itm.UpdateStatus.StyleSheet = STYLE_ERROR
+                end
+            end
+        end
         if not busy then
             local ok, key = pcall(sv.get_ui_context_key)
             if not ok or key ~= last_context_key then
@@ -1113,11 +1151,12 @@ end
 
 load_settings()
 pcall(refresh_profiles)
+show_update_info()
 update_snapshot("Ready")
 set_scan_controls(false)
 
 win:Show()
-set_page(0)
+set_page(PAGE_VOICE)
 context_timer:Start()
 disp:RunLoop()
 context_timer:Stop()
