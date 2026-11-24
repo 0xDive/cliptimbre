@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import install
 
@@ -62,6 +62,8 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(launcher.read_bytes(), install.SOURCE_LAUNCHER.read_bytes())
         self.assertEqual((self.data / "VERSION").read_text().strip(), install.VERSION)
         self.assertTrue((self.data / "backend/profile.py").is_file())
+        self.assertTrue((self.data / "backend/process_utils.py").is_file())
+        self.assertTrue((self.data / "resolve/windows_process.lua").is_file())
         for name in ("chevron-right.png", "chevron-down.png", "LICENSE"):
             self.assertEqual(
                 (self.data / "resolve/icons" / name).read_bytes(),
@@ -94,3 +96,33 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(rules.read_bytes(), (install.ROOT / "ad_safety_terms.default.json").read_bytes())
         [backup] = (self.data / "backups").glob("*/ad_safety_terms.json")
         self.assertEqual(backup.read_bytes(), previous)
+
+    def test_windows_installs_torch_wheels_before_resolving_the_dependencies(self):
+        scripts = self.data / ".venv/Scripts"
+
+        def create_environment(_):
+            scripts.mkdir(parents=True)
+            for name in ("python.exe", "pythonw.exe"):
+                (scripts / name).touch()
+
+        with (
+            patch.object(install, "DATA", self.data),
+            patch.object(install.sys, "platform", "win32"),
+            patch.object(install.platform, "machine", return_value="AMD64"),
+            patch.object(install.venv, "EnvBuilder") as builder,
+            patch.object(install, "check_runtime", return_value=True) as check_runtime,
+            patch.object(install.subprocess, "run") as run,
+        ):
+            builder.return_value.create.side_effect = create_environment
+            install.runtime(None)
+            install.runtime(None)
+
+        builder.assert_called_once_with(with_pip=True)
+        self.assertEqual(check_runtime.call_args_list, [call(scripts / "pythonw.exe")] * 2)
+        pip = [str(scripts / "python.exe"), "-m", "pip", "--disable-pip-version-check", "install",
+               "--no-compile", "--prefer-binary"]
+        pins = ["torch==2.11.0", "torchaudio==2.11.0"]
+        self.assertEqual(run.call_args_list, [
+            call([*pip, "--index-url", "https://download.pytorch.org/whl/cpu", "--no-deps", *pins], check=True),
+            call([*pip, "-r", str(install.ROOT / "requirements.txt"), *pins], check=True),
+        ])

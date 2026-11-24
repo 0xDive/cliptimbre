@@ -14,8 +14,9 @@ from typing import Any
 
 import numpy as np
 
-from timeline_audio import decode_mono_16k, load_manifest_mono_16k
+from process_utils import NO_WINDOW
 from profanity import load_rules, normalize_text, review_transcript
+from timeline_audio import decode_mono_16k, load_manifest_mono_16k
 
 APP = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice")
 SAMPLE_RATE = 16000
@@ -630,9 +631,16 @@ def run_supervised(args) -> int:
     if "--status-file" not in worker_args:
         worker_args.extend(["--status-file", str(status_path)])
     worker_args.append("--worker")
-    cmd = [sys.executable, str(Path(__file__).resolve()), *worker_args]
+    python_args = ["-X", "utf8"] if sys.flags.utf8_mode else []
+    cmd = [sys.executable, *python_args, str(Path(__file__).resolve()), *worker_args]
     log(f"starting supervised ad-safety worker: python={sys.executable}")
-    proc = subprocess.Popen(cmd)
+    if sys.platform == "win32":
+        # GUI-subsystem Python needs explicit handles to keep the worker's logs.
+        proc = subprocess.Popen(
+            cmd, stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=sys.stderr, creationflags=NO_WINDOW,
+        )
+    else:
+        proc = subprocess.Popen(cmd)
 
     last_log = 0.0
     last_stage = None

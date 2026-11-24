@@ -42,17 +42,31 @@ def check_runtime(python: Path) -> bool:
         "from speechbrain.inference.speaker import SpeakerRecognition; "
         "import importlib.util, subprocess; "
         "assert any(importlib.util.find_spec(m) for m in ('faster_whisper', 'mlx_whisper', 'whisper')); "
-        "subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-version'], stdout=subprocess.DEVNULL, check=True)"
+        "subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), '-version'], stdout=subprocess.DEVNULL, "
+        "creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), check=True)"
     )
+    if sys.platform == "win32":
+        # Confirm that pythonw forwards stdout, as required by the panel.
+        result = subprocess.run(
+            [str(python), "-B", "-c", check + "; print('ClipTimbre runtime ready')"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        if result.returncode == 0 and b"ClipTimbre runtime ready" in result.stdout.splitlines():
+            return True
+        print(result.stdout.decode(errors="replace").strip() or "Python runtime did not return output.")
+        return False
     return subprocess.run([str(python), "-B", "-c", check], check=False).returncode == 0
 
 
 def runtime(pytorch_index: str | None) -> None:
     machine = platform.machine().lower()
     intel_mac = sys.platform == "darwin" and machine == "x86_64"
+    windows = sys.platform == "win32"
     environment = DATA / ".venv"
-    python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
-    if python.is_file() and not pytorch_index and check_runtime(python):
+    python = environment / ("Scripts/python.exe" if windows else "bin/python")
+    panel_python = environment / "Scripts/pythonw.exe" if windows else python
+    launchers_ready = python.is_file() and panel_python.is_file()
+    if launchers_ready and not pytorch_index and check_runtime(panel_python):
         print(f"Using the existing audio runtime at {environment}")
         return
 
@@ -60,12 +74,16 @@ def runtime(pytorch_index: str | None) -> None:
         raise RuntimeError("Use Python 3.10–3.11 on Intel Mac or Python 3.10–3.14 on other desktops")
     if getattr(sys, "_is_gil_enabled", lambda: True)() is False:
         raise RuntimeError("Use a standard Python build with the GIL enabled")
-    if sys.platform == "win32" and machine in {"arm64", "aarch64"} and not pytorch_index:
+    if windows and machine in {"arm64", "aarch64"} and not pytorch_index:
         raise RuntimeError("Use x64 Python on Windows on Arm for the default runtime")
-    if not python.is_file():
+    if not launchers_ready:
         venv.EnvBuilder(with_pip=True).create(environment)
+    if windows and not panel_python.is_file():
+        raise RuntimeError("The installed Python runtime is missing pythonw.exe")
 
     pip = [str(python), "-m", "pip", "--disable-pip-version-check", "install"]
+    if windows:
+        pip.extend(["--no-compile", "--prefer-binary"])
     torch_version = "2.2.2" if intel_mac else "2.11.0"
     wheel_index = pytorch_index
     if not wheel_index and sys.platform != "darwin":
@@ -73,16 +91,22 @@ def runtime(pytorch_index: str | None) -> None:
     torch_args = ["--index-url", wheel_index] if wheel_index else []
     if pytorch_index:
         torch_args.append("--force-reinstall")
+    elif windows:
+        # Fetch the CPU wheels from PyTorch and resolve their dependencies
+        # once, alongside the rest of the runtime, from the regular index.
+        torch_args.append("--no-deps")
     packages = [f"torch=={torch_version}", f"torchaudio=={torch_version}"]
+    print("Installing PyTorch and TorchAudio. The first download can take a while.", flush=True)
     subprocess.run([*pip, *torch_args, *packages], check=True)
 
     requirements = ["-r", str(ROOT / "requirements.txt")]
     if intel_mac:
         requirements.append("numpy<2")
-    if pytorch_index and sys.platform == "win32":
+    if pytorch_index and windows:
         requirements.append("openai-whisper")
+    print("Installing the remaining audio and transcription dependencies.", flush=True)
     subprocess.run([*pip, *requirements, *packages], check=True)
-    if not check_runtime(python):
+    if not check_runtime(panel_python):
         raise RuntimeError("The installed Python audio runtime could not be loaded")
 
 
@@ -127,7 +151,7 @@ def install(utility: Path, pytorch_index: str | None) -> None:
             DATA / "resolve/icons" / name: ROOT / "resolve_lua/icons" / name
             for name in ("chevron-right.png", "chevron-down.png", "LICENSE")
         },
-        DATA / "resolve/streamer_voice_common.lua": ROOT / "resolve_lua/streamer_voice_common.lua",
+        **{DATA / "resolve" / p.name: p for p in (ROOT / "resolve_lua").glob("*.lua")},
         DATA / "VERSION": ROOT / "VERSION",
         launcher: SOURCE_LAUNCHER,
     }

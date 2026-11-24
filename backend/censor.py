@@ -13,6 +13,8 @@ import imageio_ffmpeg
 import numpy as np
 import soundfile as sf
 
+from process_utils import NO_WINDOW
+
 SAMPLE_RATE = 48_000
 CHANNELS = 2
 BLOCK_FRAMES = SAMPLE_RATE * 4
@@ -346,7 +348,7 @@ def process_ffmpeg_stream(
     frame_cursor = 0
     leftover = b""
     with tempfile.TemporaryFile() as err_file:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file, creationflags=NO_WINDOW)
         assert proc.stdout is not None
         try:
             with sf.SoundFile(

@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from process_utils import NO_WINDOW
+
 APP = Path(os.environ.get("STREAMER_VOICE_DATA_DIR") or Path.home() / ".streamer_voice")
 PROFILES = APP / "profiles"
 ACTIVE = APP / "active_profile.txt"
@@ -112,7 +114,7 @@ def add_reference(name: str, audio: Path, offset: float, duration: float) -> Pat
         "-t", f"{max(1.0, duration):.9f}",
         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(out),
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    proc = subprocess.run(cmd, capture_output=True, check=False, creationflags=NO_WINDOW)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", errors="replace")[-4000:])
     select_profile(name)

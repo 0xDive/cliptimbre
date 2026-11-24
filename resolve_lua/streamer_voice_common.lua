@@ -8,6 +8,7 @@ local IS_LINUX = not IS_WINDOWS and jit and jit.os == "Linux"
 local HOME = IS_WINDOWS and (os.getenv("USERPROFILE") or os.getenv("HOME") or "") or (os.getenv("HOME") or os.getenv("USERPROFILE") or "")
 local data_dir_override = ...
 local APP_DIR = type(data_dir_override) == "string" and data_dir_override or os.getenv("STREAMER_VOICE_DATA_DIR") or HOME .. "/.streamer_voice"
+local windows = IS_WINDOWS and assert(loadfile(APP_DIR .. "/resolve/windows_process.lua"))()
 local STATE_PATH = APP_DIR .. "/state.txt"
 local CONFIG_PATH = APP_DIR .. "/config.json"
 local LOG_PATH = APP_DIR .. "/streamer_voice.log"
@@ -34,7 +35,7 @@ local LATEST_AD_SAFETY_PATH = APP_DIR .. "/latest_ad_safety.tsv"
 local LATEST_AD_SAFETY_JSON_PATH = APP_DIR .. "/latest_ad_safety.json"
 local YOUTUBE_STATE_PATH = APP_DIR .. "/youtube_state.txt"
 local CENSORED_DIR = APP_DIR .. "/censored"
-local VENV_PYTHON = APP_DIR .. (IS_WINDOWS and "/.venv/Scripts/python.exe" or "/.venv/bin/python")
+local VENV_PYTHON = APP_DIR .. (IS_WINDOWS and "/.venv/Scripts/pythonw.exe" or "/.venv/bin/python")
 local MARKER_PREFIX = "[SV]"
 local MARKER_CUSTOM = "streamer_voice_match_v1"
 local REF_CUSTOM = "streamer_voice_reference_v1"
@@ -106,20 +107,18 @@ local defaults = {
 
 local function shell_quote(s)
     s = tostring(s or "")
-    if IS_WINDOWS then
-        -- Paths/arguments used by ClipTimbre never intentionally contain a
-        -- literal quote. Doubling keeps cmd.exe argument quoting predictable.
-        return '"' .. s:gsub('"', '""') .. '"'
-    end
     return "'" .. s:gsub("'", "'\\''") .. "'"
 end
 
+local function shell_command(args)
+    local quoted = {}
+    for i, arg in ipairs(args) do quoted[i] = shell_quote(arg) end
+    return table.concat(quoted, " ")
+end
+
 local function mkdir_p(path)
-    if IS_WINDOWS then
-        os.execute("if not exist " .. shell_quote(path) .. " mkdir " .. shell_quote(path) .. " >nul 2>&1")
-    else
-        os.execute("mkdir -p " .. shell_quote(path))
-    end
+    if windows then return windows.mkdir_p(path) end
+    os.execute("mkdir -p " .. shell_quote(path))
 end
 
 local function read_all(path)
@@ -145,26 +144,50 @@ local function copy_file(src, dst)
     write_all(dst, data)
 end
 
+local function windows_args(args)
+    if args[1] ~= VENV_PYTHON then return args end
+    local utf8_args = {VENV_PYTHON, "-X", "utf8"}
+    for i = 2, #args do utf8_args[#utf8_args + 1] = args[i] end
+    return utf8_args
+end
+
 local function remove_tree(path)
-    if IS_WINDOWS then
-        os.execute("if exist " .. shell_quote(path) .. " rmdir /S /Q " .. shell_quote(path) .. " >nul 2>&1")
+    if windows then
+        windows.run(windows_args({VENV_PYTHON, "-c",
+            "import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)", path}))
     else
         os.execute("rm -rf " .. shell_quote(path))
     end
 end
 
-local function run_powershell_capture(script)
-    if not IS_WINDOWS then return nil end
-    mkdir_p(APP_DIR .. "/tmp")
-    local path = APP_DIR .. "/tmp/sv_ps_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000,9999)) .. ".ps1"
-    write_all(path, script)
-    local cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File " .. shell_quote(path) .. " 2>nul"
-    local p = io.popen(cmd)
-    local out = p and p:read("*a") or nil
-    if p then p:close() end
-    os.remove(path)
-    if not out then return nil end
+local function run_capture(args, redirect_stderr)
+    if windows then
+        mkdir_p(APP_DIR .. "/tmp")
+        local path = APP_DIR .. "/tmp/capture_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+        local ok, err = windows.run(windows_args(args), path, redirect_stderr and LOG_PATH or nil)
+        local out = ok and read_all(path)
+        os.remove(path)
+        if err then error(err) end
+        return out and (out:gsub("%s+$", "")) or nil
+    end
+    local suffix = redirect_stderr and " 2>>" .. shell_quote(LOG_PATH) or " 2>/dev/null"
+    local p = io.popen(shell_command(args) .. suffix)
+    if not p then return nil end
+    local out = p:read("*a") or ""
+    local ok, why, code = p:close()
+    if ok == nil and tonumber(code or 1) ~= 0 then return nil end
     return (out:gsub("%s+$", ""))
+end
+
+local function run_powershell_capture(script)
+    mkdir_p(APP_DIR .. "/tmp")
+    local path = APP_DIR .. "/tmp/sv_ps_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999)) .. ".ps1"
+    -- Windows PowerShell reads UTF-8 scripts with a BOM.
+    write_all(path, "\239\187\191[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\r\n" .. script)
+    local out = run_capture({windows.system_exe("WindowsPowerShell\\v1.0\\powershell.exe"),
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path}, true)
+    os.remove(path)
+    return out
 end
 
 local function ps_quote(s)
@@ -172,19 +195,14 @@ local function ps_quote(s)
 end
 
 local function find_first_file(dir, prefix)
-    local cmd
-    if IS_WINDOWS then
-        local pattern = (dir .. "/" .. prefix .. ".*"):gsub("/", "\\")
-        cmd = "dir /b /a-d " .. shell_quote(pattern) .. " 2>nul"
-    else
-        cmd = "find " .. shell_quote(dir) .. " -maxdepth 1 -type f -name " .. shell_quote(prefix .. ".*") .. " -print | head -n 1"
+    if windows then
+        local name = windows.files(dir, prefix .. ".*", true)[1]
+        return name and (dir .. "/" .. name) or nil
     end
+    local cmd = "find " .. shell_quote(dir) .. " -maxdepth 1 -type f -name " .. shell_quote(prefix .. ".*") .. " -print | head -n 1"
     local p = io.popen(cmd)
     local media = p and p:read("*l") or nil
     if p then p:close() end
-    if IS_WINDOWS and media and media ~= "" and not media:match("^[A-Za-z]:[\\/]") then
-        media = dir .. "/" .. media
-    end
     return media
 end
 
@@ -501,13 +519,8 @@ end
 
 local function active_profile_reference_count()
     local dir = APP_DIR .. "/profiles/" .. active_profile_name() .. "/refs"
-    local cmd
-    if IS_WINDOWS then
-        local pattern = (dir .. "/ref_*.wav"):gsub("/", "\\")
-        cmd = 'dir /b /a-d ' .. shell_quote(pattern) .. ' 2>nul | find /c /v ""'
-    else
-        cmd = "find " .. shell_quote(dir) .. " -maxdepth 1 -type f -name 'ref_*.wav' 2>/dev/null | wc -l"
-    end
+    if windows then return #windows.files(dir, "ref_*.wav") end
+    local cmd = "find " .. shell_quote(dir) .. " -maxdepth 1 -type f -name 'ref_*.wav' 2>/dev/null | wc -l"
     local p = io.popen(cmd)
     local value = p and p:read("*l") or "0"
     if p then p:close() end
@@ -786,8 +799,8 @@ local function wait_seconds(sec)
     sec = math.max(0.01, tonumber(sec) or 0.01)
     if type(bmd) ~= "nil" and bmd and bmd.wait then
         bmd.wait(sec)
-    elseif IS_WINDOWS then
-        os.execute('powershell.exe -NoProfile -Command "Start-Sleep -Milliseconds ' .. tostring(math.floor(sec * 1000 + 0.5)) .. '" >nul 2>&1')
+    elseif windows then
+        windows.sleep(sec)
     else
         os.execute("sleep " .. tostring(sec))
     end
@@ -934,6 +947,15 @@ local function command_ok(ret1, ret2, ret3)
     return false
 end
 
+local function run_logged(args)
+    if windows then
+        local ok, err = windows.run(windows_args(args), LOG_PATH, LOG_PATH, true)
+        if err then log(err) end
+        return ok
+    end
+    return command_ok(os.execute(shell_command(args) .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"))
+end
+
 local function run_backend(source, state, cfg, out_json, out_tsv, analysis_id)
     if not file_exists(VENV_PYTHON) then fail("Python environment not found. Re-run the ClipTimbre installer") end
     if not file_exists(BACKEND_PATH) then fail("Voice backend not found. Re-run the ClipTimbre installer") end
@@ -987,13 +1009,9 @@ local function run_backend(source, state, cfg, out_json, out_tsv, analysis_id)
     table.insert(args, cfg.refine_boundaries and "--refine-boundaries" or "--no-refine-boundaries")
     table.insert(args, cfg.cache_enabled and "--cache" or "--no-cache")
 
-    local q = {}
-    for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-    local cmd = table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
     notify(source.kind == "manifest" and "Finding voice across cut timeline…" or "Finding voice…")
     log("Running backend source_mode=" .. tostring(source.mode or source.kind))
-    local r1, r2, r3 = os.execute(cmd)
-    if not command_ok(r1, r2, r3) then
+    if not run_logged(args) then
         fail("Voice analyzer failed. See " .. LOG_PATH)
     end
 end
@@ -1198,13 +1216,9 @@ local function run_pause_backend(source, cfg, out_tsv, out_json, analysis_id, pl
         "--output-json", out_json,
     }
     for _, a in ipairs(rest) do table.insert(args, a) end
-    local q = {}
-    for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-    local cmd = table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
     notify("Finding pauses inside streamer regions…")
     log("Running pause backend source_mode=" .. (source and tostring(source.mode or source.kind) or "cached_render"))
-    local r1, r2, r3 = os.execute(cmd)
-    if not command_ok(r1, r2, r3) then
+    if not run_logged(args) then
         fail("Pause analyzer failed. See " .. LOG_PATH)
     end
 end
@@ -1462,10 +1476,7 @@ function M.mark_video_pauses(track, crop)
         local out = run_dir .. "/holds.tsv"
         local mapped, skipped = write_video_pause_manifest(timeline, fps, track, manifest)
         local args = {VENV_PYTHON, VIDEO_PAUSE_BACKEND_PATH, "--manifest", manifest, "--crop", crop, "--output", out}
-        for i, arg in ipairs(args) do args[i] = shell_quote(arg) end
-        local cmd = table.concat(args, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
-        local a, b, c = os.execute(cmd)
-        if not command_ok(a, b, c) then fail("Video scan failed. See " .. LOG_PATH) end
+        if not run_logged(args) then fail("Video scan failed. See " .. LOG_PATH) end
         if layout ~= timeline_layout(timeline, {"video"}) then fail("The video timeline changed during the scan") end
         local output = read_all(out) or ""
         local scanned = tonumber(output:match("^# scanned\t(%d+)"))
@@ -1551,13 +1562,9 @@ local function run_ad_safety_backend(source, cfg, out_tsv, out_json)
         "--output-json", out_json,
     }
     for _, a in ipairs(rest) do table.insert(args, a) end
-    local q = {}
-    for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-    local cmd = table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
     notify("Transcribing and scanning YouTube ad-safety risks…")
     log("Running YouTube ad-safety backend source_mode=" .. tostring(source.mode or source.kind))
-    local r1, r2, r3 = os.execute(cmd)
-    if not command_ok(r1, r2, r3) then
+    if not run_logged(args) then
         fail("YouTube ad-safety scan failed. See " .. LOG_PATH)
     end
 end
@@ -1909,12 +1916,8 @@ local function run_censor_backend(source, cfg, opts, categories_csv, severities_
         "--fade-ms", tostring(cfg.youtube_censor_fade_ms or 70.0),
         "--beep-duck-db", tostring(cfg.youtube_censor_beep_duck_db or -36.0),
     }
-    local q = {}
-    for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-    local cmd = table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1"
     notify("Building censored timeline audio…")
-    local r1, r2, r3 = os.execute(cmd)
-    if not command_ok(r1, r2, r3) then
+    if not run_logged(args) then
         fail("Auto Censor audio processing failed. See " .. LOG_PATH)
     end
 end
@@ -2224,8 +2227,7 @@ local function prepare_timeline_mute_fades(media_pool, plan, fps, run_dir, fade_
         local path = run_dir .. "/timeline_fades.json"
         write_all(path, "[" .. table.concat(tasks, ",\n") .. "]")
         local args = {VENV_PYTHON, TIMELINE_FADES_BACKEND_PATH, path, fade_dir}
-        for i, value in ipairs(args) do args[i] = shell_quote(value) end
-        if not command_ok(os.execute(table.concat(args, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1")) then
+        if not run_logged(args) then
             fail("Could not render Timeline Mute fades. See " .. LOG_PATH)
         end
     end
@@ -2978,18 +2980,6 @@ function M.clear_cache()
 end
 
 
-local function run_capture(args, redirect_stderr)
-    local q = {}
-    for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-    local suffix = redirect_stderr and " 2>>" .. shell_quote(LOG_PATH) or (IS_WINDOWS and " 2>nul" or " 2>/dev/null")
-    local p = io.popen(table.concat(q, " ") .. suffix)
-    if not p then return nil end
-    local out = p:read("*a") or ""
-    local ok, why, code = p:close()
-    if ok == nil and tonumber(code or 1) ~= 0 then return nil end
-    return (out:gsub("%s+$", ""))
-end
-
 local function run_profile_command(...)
     if not file_exists(VENV_PYTHON) or not file_exists(PROFILE_BACKEND_PATH) then
         fail("Profile backend missing. Re-run the ClipTimbre installer")
@@ -3357,7 +3347,7 @@ end
 function M.open_app_folder()
     mkdir_p(APP_DIR)
     if IS_WINDOWS then
-        os.execute('start "" explorer.exe ' .. shell_quote(APP_DIR))
+        windows.open(APP_DIR)
     elseif IS_LINUX then
         os.execute("xdg-open " .. shell_quote(APP_DIR) .. " >/dev/null 2>&1 &")
     else
@@ -3368,7 +3358,7 @@ end
 function M.open_log()
     if not file_exists(LOG_PATH) then write_all(LOG_PATH, "") end
     if IS_WINDOWS then
-        os.execute('start "" notepad.exe ' .. shell_quote(LOG_PATH))
+        windows.open(windows.system_exe("notepad.exe"), LOG_PATH)
     elseif IS_LINUX then
         os.execute("xdg-open " .. shell_quote(LOG_PATH) .. " >/dev/null 2>&1 &")
     else
@@ -3379,7 +3369,7 @@ end
 function M.open_ad_safety_terms()
     if not file_exists(AD_SAFETY_TERMS_PATH) then fail("Ad-safety terms file is missing") end
     if IS_WINDOWS then
-        os.execute('start "" notepad.exe ' .. shell_quote(AD_SAFETY_TERMS_PATH))
+        windows.open(windows.system_exe("notepad.exe"), AD_SAFETY_TERMS_PATH)
     elseif IS_LINUX then
         os.execute("xdg-open " .. shell_quote(AD_SAFETY_TERMS_PATH) .. " >/dev/null 2>&1 &")
     else
@@ -3389,7 +3379,7 @@ end
 
 local function open_url(url)
     if IS_WINDOWS then
-        os.execute('start "" ' .. shell_quote(url))
+        windows.open(url)
     else
         local opener = IS_LINUX and "xdg-open" or "open"
         os.execute(opener .. " " .. shell_quote(url) .. " >/dev/null 2>&1 &")
@@ -3460,33 +3450,37 @@ local function build_ad_safety_args(source, cfg, out_tsv, out_json, status_path)
     return args
 end
 
-local function launch_background_args(args, runner_path, exit_path)
-    if IS_WINDOWS then
-        local parts = {"$ErrorActionPreference = 'Continue'"}
-        local call = {"& " .. ps_quote(args[1])}
-        for i = 2, #args do table.insert(call, ps_quote(args[i])) end
-        table.insert(parts, table.concat(call, " ") .. " *>> " .. ps_quote(LOG_PATH))
-        table.insert(parts, "$code = $LASTEXITCODE")
-        table.insert(parts, "Set-Content -LiteralPath " .. ps_quote(exit_path) .. " -Value ([string]$code) -NoNewline")
-        table.insert(parts, "exit $code")
-        write_all(runner_path, table.concat(parts, "\r\n") .. "\r\n")
-        local cmd = 'start "" /B powershell.exe -NoProfile -ExecutionPolicy Bypass -File ' .. shell_quote(runner_path) .. ' >nul 2>&1'
-        os.execute(cmd)
-    else
-        local q = {}
-        for _, a in ipairs(args) do table.insert(q, shell_quote(a)) end
-        local script = table.concat({
-            "#!/bin/sh",
-            table.concat(q, " ") .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1",
-            "code=$?",
-            "printf '%s' \"$code\" > " .. shell_quote(exit_path),
-            "exit \"$code\"",
-            "",
-        }, "\n")
-        write_all(runner_path, script)
-        os.execute("chmod +x " .. shell_quote(runner_path))
-        os.execute("/bin/sh " .. shell_quote(runner_path) .. " >/dev/null 2>&1 &")
+local function launch_background_args(args, job)
+    if windows then
+        local err
+        job.process, err = windows.start(windows_args(args), LOG_PATH, LOG_PATH, true)
+        return job.process ~= nil, err
     end
+    local runner_path = job.run_dir .. "/run.sh"
+    local script = table.concat({
+        "#!/bin/sh",
+        shell_command(args) .. " >>" .. shell_quote(LOG_PATH) .. " 2>&1",
+        "code=$?",
+        "printf '%s' \"$code\" > " .. shell_quote(job.exit_path),
+        "exit \"$code\"",
+        "",
+    }, "\n")
+    write_all(runner_path, script)
+    return command_ok(os.execute("/bin/sh " .. shell_quote(runner_path) .. " >/dev/null 2>&1 &"))
+end
+
+local function background_exit_code(job)
+    if job.process then return windows.exit_code(job.process, false) end
+    local status = read_all(job.exit_path)
+    return status and tonumber(status) or nil
+end
+
+local function finish_background_job(job)
+    if job.process then
+        windows.close(job.process)
+        job.process = nil
+    end
+    remove_tree(job.run_dir)
 end
 
 function M.start_update_check()
@@ -3495,16 +3489,19 @@ function M.start_update_check()
     end
     local run_dir = APP_DIR .. "/tmp/update_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
     mkdir_p(run_dir)
-    local exit_path = run_dir .. "/exit_code.txt"
-    local runner_path = run_dir .. (IS_WINDOWS and "/check.ps1" or "/check.sh")
-    launch_background_args({VENV_PYTHON, UPDATE_BACKEND_PATH, "--cache", UPDATE_CACHE_PATH}, runner_path, exit_path)
-    return { run_dir = run_dir, exit_path = exit_path, started_at = os.time() }
+    local job = { run_dir = run_dir, exit_path = run_dir .. "/exit_code.txt", started_at = os.time() }
+    local started, err = launch_background_args({VENV_PYTHON, UPDATE_BACKEND_PATH, "--cache", UPDATE_CACHE_PATH}, job)
+    if not started then
+        finish_background_job(job)
+        return nil, err or "Could not start the update checker."
+    end
+    return job
 end
 
 function M.poll_update_check(job)
-    local code = tonumber(read_all(job.exit_path))
+    local code = background_exit_code(job)
     if code == nil and os.time() - job.started_at < 30 then return nil end
-    remove_tree(job.run_dir)
+    finish_background_job(job)
     return code == 0
 end
 
@@ -3545,7 +3542,6 @@ function M.start_youtube_safety_scan()
         out_json = run_dir .. "/ad_safety.json",
         progress_path = run_dir .. "/progress.json",
         exit_path = run_dir .. "/exit_code.txt",
-        runner_path = run_dir .. (IS_WINDOWS and "/run_scan.ps1" or "/run_scan.sh"),
         started_at = os.time(),
         source_mode = tostring(source.mode or source.kind),
         finished = false,
@@ -3553,7 +3549,11 @@ function M.start_youtube_safety_scan()
     }
     local args = build_ad_safety_args(source, cfg, job.out_tsv, job.out_json, job.progress_path)
     log("Starting background YouTube ad-safety scan source_mode=" .. job.source_mode)
-    launch_background_args(args, job.runner_path, job.exit_path)
+    local started, err = launch_background_args(args, job)
+    if not started then
+        finish_background_job(job)
+        fail(err or "Could not start the YouTube scan.")
+    end
     return job
 end
 
@@ -3561,7 +3561,7 @@ local function stop_scan_worker(job, pid)
     pid = tonumber(pid)
     if not pid or pid <= 1 then return false end
     if IS_WINDOWS then
-        os.execute("taskkill /PID " .. tostring(math.floor(pid)) .. " /T /F >nul 2>&1")
+        windows.run({windows.system_exe("taskkill.exe"), "/PID", tostring(math.floor(pid)), "/T", "/F"})
     else
         os.execute("pkill -TERM -P " .. tostring(math.floor(pid)) .. " >/dev/null 2>&1 || true")
         os.execute("kill -TERM " .. tostring(math.floor(pid)) .. " >/dev/null 2>&1 || true")
@@ -3586,11 +3586,12 @@ function M.poll_youtube_safety_scan(job)
     local status_exists = file_exists(job.progress_path)
     local status = parse_progress_status(job.progress_path)
     local elapsed = math.max(0, os.time() - (job.started_at or os.time()))
-    if (not status_exists) and elapsed > 45 and not file_exists(job.exit_path) then
+    local code = background_exit_code(job)
+    if not status_exists and elapsed > 45 and code == nil then
         job.finished = true
         local result = { done = true, failed = true, stage = "starting", error = "Ad-safety worker did not start within 45 seconds" }
         job.final_status = result
-        remove_tree(job.run_dir)
+        finish_background_job(job)
         return result
     end
     if job.cancel_requested and not job.cancel_signal_sent and status.pid then
@@ -3612,9 +3613,7 @@ function M.poll_youtube_safety_scan(job)
         elapsed_seconds = elapsed,
         cancel_requested = job.cancel_requested == true,
     }
-    if not file_exists(job.exit_path) then return base end
-
-    local code = tonumber((read_all(job.exit_path) or ""):match("%-?%d+")) or 1
+    if code == nil then return base end
     if code ~= 0 or job.cancel_requested then
         job.finished = true
         local cancelled = job.cancel_requested == true
@@ -3627,7 +3626,7 @@ function M.poll_youtube_safety_scan(job)
             error = cancelled and "Scan cancelled" or ("Ad-safety worker failed with exit code " .. tostring(code)),
         }
         job.final_status = result
-        remove_tree(job.run_dir)
+        finish_background_job(job)
         return result
     end
 
@@ -3662,7 +3661,7 @@ function M.poll_youtube_safety_scan(job)
         result = { done = true, failed = true, stage = "finalizing", error = tostring(err) }
     end
     job.final_status = result
-    remove_tree(job.run_dir)
+    finish_background_job(job)
     return result
 end
 

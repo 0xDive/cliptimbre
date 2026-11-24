@@ -12,6 +12,8 @@ import sys
 
 import imageio_ffmpeg
 
+from process_utils import NO_WINDOW
+
 try:
     import av
 except ImportError:
@@ -91,7 +93,7 @@ def render_edge(task: dict, channels: list[tuple[int, int]], output_dir: Path, f
         "-filter_complex_threads", "1", "-filter_complex", ";".join(inputs), "-map", "[out]",
         "-c:a", "pcm_s24le", str(output),
     ]
-    completed = subprocess.run(command, capture_output=True, check=False)
+    completed = subprocess.run(command, capture_output=True, check=False, creationflags=NO_WINDOW)
     if completed.returncode:
         output.unlink(missing_ok=True)
         raise ValueError(completed.stderr.decode("utf-8", errors="replace").strip())

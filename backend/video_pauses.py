@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 
+from process_utils import NO_WINDOW
 
 MIN_HOLD = 1.2
 MOTION_CONTEXT = 0.35
@@ -58,7 +59,8 @@ def scan_clip(ffmpeg: str, clip: dict, crop: tuple[int, int, int, int]) -> list[
          "-ss", f"{offset:.9f}", "-t", f"{duration:.9f}", "-i", clip["path"],
          "-map", "0:v:0", "-an", "-sn", "-dn", "-filter_threads", "1",
          "-vf", filters, "-f", "null", "-"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace", check=False,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace",
+        check=False, creationflags=NO_WINDOW,
     )
     if proc.returncode:
         raise RuntimeError(proc.stderr[-2500:].strip())
