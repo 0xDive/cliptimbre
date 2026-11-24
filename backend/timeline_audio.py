@@ -13,6 +13,8 @@ from typing import Callable
 import imageio_ffmpeg
 import numpy as np
 
+from process_utils import NO_WINDOW
+
 SAMPLE_RATE = 16000
 
 
@@ -42,7 +44,7 @@ def decode_mono_16k(
     # Let FFmpeg stream decoded samples to disk and map them into memory.
     # This avoids keeping both subprocess stdout and a full NumPy copy.
     with tempfile.TemporaryFile() as output:
-        proc = subprocess.run(cmd, stdout=output, stderr=subprocess.PIPE, check=False)
+        proc = subprocess.run(cmd, stdout=output, stderr=subprocess.PIPE, check=False, creationflags=NO_WINDOW)
         if proc.returncode:
             err = proc.stderr.decode("utf-8", errors="replace")[-4000:]
             raise RuntimeError(f"ffmpeg could not decode audio: {err}")
